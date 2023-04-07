@@ -4,6 +4,7 @@ import time
 import requests
 import CloudFlare
 import tldextract
+import ipaddress
 
 # Your Cloudflare global API key and email
 CLOUDFLARE_API_KEY = os.environ.get('CLOUDFLARE_API_KEY')
@@ -20,10 +21,38 @@ IP_VERSION = os.environ.get('IP_VERSION', 'both')
 cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, token=CLOUDFLARE_API_KEY)
 
 
+def is_valid_wan_ip(ip):
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        return not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
+    except ValueError:
+        return False
+
+
 def get_wan_ip(ip_version):
     """Returns WAN IP for the given IP version"""
-    response = requests.get(f"https://ipify{'6' if ip_version == 6 else ''}.saltbox.dev?format=json")
-    return response.json()["ip"]
+    ip_services = [
+        f"https://ipify{'6' if ip_version == 6 else ''}.saltbox.dev?format=json",
+        f"https://api{'6' if ip_version == 6 else '4'}.ipify.org?format=json",
+        f"https://{'ipv6' if ip_version == 6 else 'ipv4'}.icanhazip.com"
+    ]
+
+    for service_url in ip_services:
+        try:
+            response = requests.get(service_url, timeout=5)
+            response.raise_for_status()
+
+            if 'json' in service_url:
+                ip_address = response.json()["ip"]
+            else:
+                ip_address = response.text.strip()
+
+            if is_valid_wan_ip(ip_address):
+                return ip_address
+        except (requests.RequestException, ValueError):
+            continue
+
+    raise Exception(f"Failed to obtain a valid IPv{ip_version} WAN IP address")
 
 
 def get_wan_ips():
