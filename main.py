@@ -13,12 +13,13 @@ CLOUDFLARE_PROXY_DEFAULT = os.environ.get('CLOUDFLARE_PROXY_DEFAULT', False)
 
 # Traefik API URL
 TRAEFIK_API_URL = os.environ.get('TRAEFIK_API_URL')
+TRAEFIK_ENTRYPOINTS = os.environ.get('TRAEFIK_ENTRYPOINTS')
 
 # IP Version: '4' for IPv4 only, '6' for IPv6 only, or "both" for both IPv4 and IPv6
 IP_VERSION = os.environ.get('IP_VERSION', 'both')
 
 # Initialize Cloudflare client
-cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, token=CLOUDFLARE_API_KEY)
+cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, key=CLOUDFLARE_API_KEY)
 
 
 def is_valid_wan_ip(ip):
@@ -88,8 +89,17 @@ def update_cloudflare_records(routers, wan_ips):
     """Updates Cloudflare DNS records for the given http routers and WAN IPs"""
     processed_zones = {}
     processed_hosts = set()  # Keep track of processed rule hosts
+    entrypoints_list = [entrypoint.strip() for entrypoint in TRAEFIK_ENTRYPOINTS.split(',')]
 
     for router in routers.values():
+
+        # Check if router is using one of the given entrypoints
+        if router.get('entryPoints') and all(
+            entrypoint not in router['entryPoints']
+            for entrypoint in entrypoints_list
+        ):
+            continue
+
         rule = router.get('rule', '')
         host_match = re.search(r"Host\(`(.*?)`\)", rule)
         if not host_match:
