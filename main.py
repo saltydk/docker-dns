@@ -15,6 +15,8 @@ CLOUDFLARE_PROXY_DEFAULT = os.environ.get('CLOUDFLARE_PROXY_DEFAULT', False)
 TRAEFIK_API_URL = os.environ.get('TRAEFIK_API_URL')
 TRAEFIK_ENTRYPOINTS = os.environ.get('TRAEFIK_ENTRYPOINTS')
 
+CUSTOM_URLS = os.environ.get('CUSTOM_URLS', '')
+
 # IP Version: '4' for IPv4 only, '6' for IPv6 only, or "both" for both IPv4 and IPv6
 IP_VERSION = os.environ.get('IP_VERSION', 'both')
 
@@ -90,36 +92,22 @@ def update_cloudflare_records(routers, wan_ips):
     processed_zones = {}
     processed_hosts = set()  # Keep track of processed rule hosts
     entrypoints_list = [entrypoint.strip() for entrypoint in TRAEFIK_ENTRYPOINTS.split(',')]
+    custom_urls = [url.strip() for url in CUSTOM_URLS.split(',') if url.strip()]
 
-    for router in routers.values():
-
-        # Check if router is using one of the given entrypoints
-        if router.get('entryPoints') and all(
-            entrypoint not in router['entryPoints']
-            for entrypoint in entrypoints_list
-        ):
-            continue
-
-        rule = router.get('rule', '')
-        host_match = re.search(r"Host\(`(.*?)`\)", rule)
-        if not host_match:
-            continue
-
-        host = host_match[1]
+    def process_host(host):
         extracted_domain = tldextract.extract(host)
         root_domain = ".".join(extracted_domain[1:])
 
         if not extracted_domain.suffix:
-            print(f"Skipping {host} as it's not a valid domain")
-            continue
+            return
 
         if root_domain in processed_zones:
             zone_id, dns_records = processed_zones[root_domain]
         else:
             zone_id = get_zone_id(root_domain)
             if not zone_id:
-                print(f"Zone for domain {root_domain} not found")
-                continue
+                print(f"Zone ID for domain {root_domain} not found")
+                return
 
             dns_records = []
             page_num = 1
@@ -134,11 +122,6 @@ def update_cloudflare_records(routers, wan_ips):
 
         existing_a_records = {record['name']: record for record in dns_records if record['type'] == 'A'}
         existing_aaaa_records = {record['name']: record for record in dns_records if record['type'] == 'AAAA'}
-
-        # Check if the rule host has already been processed
-        if host in processed_hosts:
-            continue
-        processed_hosts.add(host)
 
         for ip_version, ip in wan_ips.items():
             if ip_version == 4:
@@ -169,6 +152,29 @@ def update_cloudflare_records(routers, wan_ips):
                     'content': ip,
                     'proxied': CLOUDFLARE_PROXY_DEFAULT
                 })
+
+    for router in routers.values():
+        # Check if router is using one of the given entrypoints
+        if router.get('entryPoints') and all(
+            entrypoint not in router['entryPoints']
+            for entrypoint in entrypoints_list
+        ):
+            continue
+
+        rule = router.get('rule', '')
+        host_match = re.search(r"Host\(`(.*?)`\)", rule)
+        if not host_match:
+            continue
+
+        host = host_match[1]
+        if host not in processed_hosts:
+            process_host(host)
+            processed_hosts.add(host)
+
+    for custom_url in custom_urls:
+        if custom_url not in processed_hosts:
+            process_host(custom_url)
+            processed_hosts.add(custom_url)
 
 
 def main():
