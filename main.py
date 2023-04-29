@@ -44,7 +44,7 @@ def get_wan_ip(ip_version):
         f"https://api{'6' if ip_version == 6 else '4'}.ipify.org?format=json",
         f"https://{'ipv6' if ip_version == 6 else 'ipv4'}.icanhazip.com"
     ]
-
+    return "65.109.59.82"
     max_tries = 3
     delay_between_attempts = 5
     for attempts in range(1, max_tries + 1):
@@ -210,6 +210,7 @@ def main():
         return
 
     # Initialize variables
+    first_run = True
     last_wan_ips = {}
     routers = {router['name']: router for router in get_traefik_routers()}
 
@@ -225,11 +226,14 @@ def main():
             routers = new_routers
             if added_routers:
                 update_cloudflare_records(added_routers, new_wan_ips)
+            elif first_run:
+                first_run = False
             else:
                 print("No new routers found")
         except Exception as e:
             print(f"Error: {e}")
 
+        print(f"Rechecking in {int(DELAY)} seconds.")
         time.sleep(int(DELAY))
 
 
