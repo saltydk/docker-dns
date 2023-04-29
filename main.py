@@ -230,7 +230,7 @@ def main():
         except Exception as e:
             print(f"Error: {e}")
 
-        time.sleep(DELAY)
+        time.sleep(int(DELAY))
 
 
 if __name__ == "__main__":
