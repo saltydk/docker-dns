@@ -44,7 +44,7 @@ def get_wan_ip(ip_version):
         f"https://api{'6' if ip_version == 6 else '4'}.ipify.org?format=json",
         f"https://{'ipv6' if ip_version == 6 else 'ipv4'}.icanhazip.com"
     ]
-    return "65.109.59.82"
+
     max_tries = 3
     delay_between_attempts = 5
     for attempts in range(1, max_tries + 1):
@@ -64,10 +64,10 @@ def get_wan_ip(ip_version):
                 continue
 
         if attempts < max_tries:
-            print(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
+            print(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.", flush=True)
             time.sleep(delay_between_attempts)
 
-    print(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries")
+    print(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries", flush=True)
     sys.exit(1)
 
 
@@ -119,7 +119,7 @@ def update_cloudflare_records(routers, wan_ips):
         else:
             zone_id = get_zone_id(root_domain)
             if not zone_id:
-                print(f"Zone ID for domain {root_domain} not found")
+                print(f"Zone ID for domain {root_domain} not found", flush=True)
                 return
 
             dns_records = []
@@ -144,13 +144,13 @@ def update_cloudflare_records(routers, wan_ips):
                 record_type = 'AAAA'
                 existing_records = existing_aaaa_records
             else:
-                print(f"Invalid IP version: {ip_version}")
+                print(f"Invalid IP version: {ip_version}", flush=True)
                 continue
 
             if host in existing_records:
                 record = existing_records[host]
                 if record['content'] != ip:
-                    print(f"Updating {record_type} record for {host}")
+                    print(f"Updating {record_type} record for {host}", flush=True)
                     cf.zones.dns_records.put(zone_id, record['id'], data={
                         'type': record_type,
                         'name': host,
@@ -158,7 +158,7 @@ def update_cloudflare_records(routers, wan_ips):
                         'proxied': record['proxied']
                     })
             else:
-                print(f"Adding {record_type} record for {host}")
+                print(f"Adding {record_type} record for {host}", flush=True)
                 cf.zones.dns_records.post(zone_id, data={
                     'type': record_type,
                     'name': host,
@@ -192,13 +192,13 @@ def update_cloudflare_records(routers, wan_ips):
 
 def main():
     """Main loop"""
-    print("Saltbox Cloudflare DNS container starting.")
+    print("Saltbox Cloudflare DNS container starting.", flush=True)
 
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
         print(
             "Please set the required environment variables: CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, "
-            "IP_VERSION")
+            "IP_VERSION", flush=True)
         return
 
     # Validate Cloudflare global API key
@@ -208,7 +208,7 @@ def main():
         if 'unknown x-auth-key or x-auth-email' not in str(e).lower():
             raise
 
-        print("Invalid Cloudflare global API key or email")
+        print("Invalid Cloudflare global API key or email", flush=True)
         return
 
     # Initialize variables
@@ -221,7 +221,7 @@ def main():
             new_routers = {router['name']: router for router in get_traefik_routers()}
             new_wan_ips = get_wan_ips()
             if new_wan_ips != last_wan_ips:
-                print(f"WAN IPs changed to {new_wan_ips}")
+                print(f"WAN IPs changed to {new_wan_ips}", flush=True)
                 last_wan_ips = new_wan_ips
                 update_cloudflare_records(new_routers, last_wan_ips)
             added_routers = {k: v for k, v in new_routers.items() if k not in routers}
@@ -231,11 +231,11 @@ def main():
             elif first_run:
                 first_run = False
             else:
-                print("No new routers found")
+                print("No new routers found", flush=True)
         except Exception as e:
             print(f"Error: {e}")
 
-        print(f"Rechecking in {int(DELAY)} seconds.")
+        print(f"Rechecking in {int(DELAY)} seconds.", flush=True)
         time.sleep(int(DELAY))
 
 
