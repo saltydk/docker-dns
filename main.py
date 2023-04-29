@@ -85,7 +85,7 @@ def get_wan_ips():
 
 def get_traefik_routers():
     """Returns Traefik http routers from the given API URL"""
-    response = requests.get(f"{TRAEFIK_API_URL}/http/routers")
+    response = requests.get(f"{TRAEFIK_API_URL}/api/http/routers")
     return response.json()
 
 
