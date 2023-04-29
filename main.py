@@ -7,6 +7,17 @@ import tldextract
 import ipaddress
 import sys
 from CloudFlare.exceptions import CloudFlareAPIError
+import logging
+from sys import stdout
+
+# Define logger
+logger = logging.getLogger('mylogger')
+
+logger.setLevel(logging.DEBUG)
+logFormatter = logging.Formatter("%(asctime)s %(levelname)-8s %(message)s")
+consoleHandler = logging.StreamHandler(stdout)
+consoleHandler.setFormatter(logFormatter)
+logger.addHandler(consoleHandler)
 
 # Your Cloudflare global API key and email
 CLOUDFLARE_API_KEY = os.environ.get('CLOUDFLARE_API_KEY')
@@ -64,10 +75,10 @@ def get_wan_ip(ip_version):
                 continue
 
         if attempts < max_tries:
-            print(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
+            logger.warning(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
             time.sleep(delay_between_attempts)
 
-    print(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries")
+    logger.error(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries")
     sys.exit(1)
 
 
@@ -119,7 +130,7 @@ def update_cloudflare_records(routers, wan_ips):
         else:
             zone_id = get_zone_id(root_domain)
             if not zone_id:
-                print(f"Zone ID for domain {root_domain} not found")
+                logger.warning(f"Zone ID for domain {root_domain} not found")
                 return
 
             dns_records = []
@@ -144,13 +155,13 @@ def update_cloudflare_records(routers, wan_ips):
                 record_type = 'AAAA'
                 existing_records = existing_aaaa_records
             else:
-                print(f"Invalid IP version: {ip_version}")
+                logger.error(f"Invalid IP version: {ip_version}")
                 continue
 
             if host in existing_records:
                 record = existing_records[host]
                 if record['content'] != ip:
-                    print(f"Updating {record_type} record for {host}")
+                    logger.info(f"Updating {record_type} record for {host}")
                     cf.zones.dns_records.put(zone_id, record['id'], data={
                         'type': record_type,
                         'name': host,
@@ -158,7 +169,7 @@ def update_cloudflare_records(routers, wan_ips):
                         'proxied': record['proxied']
                     })
             else:
-                print(f"Adding {record_type} record for {host}")
+                logger.info(f"Adding {record_type} record for {host}")
                 cf.zones.dns_records.post(zone_id, data={
                     'type': record_type,
                     'name': host,
@@ -192,11 +203,11 @@ def update_cloudflare_records(routers, wan_ips):
 
 def main():
     """Main loop"""
-    print("Saltbox Cloudflare DNS container starting.")
+    logger.info("Saltbox Cloudflare DNS container starting.")
 
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
-        print(
+        logger.error(
             "Please set the required environment variables: CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, "
             "IP_VERSION")
         return
@@ -208,7 +219,7 @@ def main():
         if 'unknown x-auth-key or x-auth-email' not in str(e).lower():
             raise
 
-        print("Invalid Cloudflare global API key or email")
+        logger.error("Invalid Cloudflare global API key or email")
         return
 
     # Initialize variables
@@ -221,7 +232,7 @@ def main():
             new_routers = {router['name']: router for router in get_traefik_routers()}
             new_wan_ips = get_wan_ips()
             if new_wan_ips != last_wan_ips:
-                print(f"WAN IPs changed to {new_wan_ips}")
+                logger.info(f"WAN IPs changed to {new_wan_ips}")
                 last_wan_ips = new_wan_ips
                 update_cloudflare_records(new_routers, last_wan_ips)
             added_routers = {k: v for k, v in new_routers.items() if k not in routers}
@@ -231,11 +242,11 @@ def main():
             elif first_run:
                 first_run = False
             else:
-                print("No new routers found")
+                logger.info("No new routers found")
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(f"{e}")
 
-        print(f"Rechecking in {int(DELAY)} seconds.")
+        logger.info(f"Rechecking in {int(DELAY)} seconds.")
         time.sleep(int(DELAY))
 
 
