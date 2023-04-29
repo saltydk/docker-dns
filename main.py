@@ -192,6 +192,8 @@ def update_cloudflare_records(routers, wan_ips):
 
 def main():
     """Main loop"""
+    print("Saltbox Cloudflare DNS container starting.")
+
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
         print(
