@@ -5,6 +5,8 @@ import requests
 import CloudFlare
 import tldextract
 import ipaddress
+import sys
+from CloudFlare.exceptions import CloudFlareAPIError
 
 # Your Cloudflare global API key and email
 CLOUDFLARE_API_KEY = os.environ.get('CLOUDFLARE_API_KEY')
@@ -20,6 +22,9 @@ CUSTOM_URLS = os.environ.get('CUSTOM_URLS', '')
 # IP Version: '4' for IPv4 only, '6' for IPv6 only, or "both" for both IPv4 and IPv6
 IP_VERSION = os.environ.get('IP_VERSION', 'both')
 
+# Delay
+DELAY = os.environ.get('DELAY', 60)
+
 # Initialize Cloudflare client
 cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, key=CLOUDFLARE_API_KEY)
 
@@ -33,29 +38,37 @@ def is_valid_wan_ip(ip):
 
 
 def get_wan_ip(ip_version):
-    """Returns WAN IP for the given IP version"""
+    """Returns WAN IP for the given IP version or exits the program after X amount of tries"""
     ip_services = [
         f"https://ipify{'6' if ip_version == 6 else ''}.saltbox.dev?format=json",
         f"https://api{'6' if ip_version == 6 else '4'}.ipify.org?format=json",
         f"https://{'ipv6' if ip_version == 6 else 'ipv4'}.icanhazip.com"
     ]
 
-    for service_url in ip_services:
-        try:
-            response = requests.get(service_url, timeout=5)
-            response.raise_for_status()
+    max_tries = 3
+    delay_between_attempts = 5
+    for attempts in range(1, max_tries + 1):
+        for service_url in ip_services:
+            try:
+                response = requests.get(service_url, timeout=5)
+                response.raise_for_status()
 
-            if 'json' in service_url:
-                ip_address = response.json()["ip"]
-            else:
-                ip_address = response.text.strip()
+                ip_address = (
+                    response.json()["ip"]
+                    if 'json' in service_url
+                    else response.text.strip()
+                )
+                if is_valid_wan_ip(ip_address):
+                    return ip_address
+            except (requests.RequestException, ValueError):
+                continue
 
-            if is_valid_wan_ip(ip_address):
-                return ip_address
-        except (requests.RequestException, ValueError):
-            continue
+        if attempts < max_tries:
+            print(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
+            time.sleep(delay_between_attempts)
 
-    raise Exception(f"Failed to obtain a valid IPv{ip_version} WAN IP address")
+    print(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries")
+    sys.exit(1)
 
 
 def get_wan_ips():
@@ -156,8 +169,8 @@ def update_cloudflare_records(routers, wan_ips):
     for router in routers.values():
         # Check if router is using one of the given entrypoints
         if router.get('entryPoints') and all(
-            entrypoint not in router['entryPoints']
-            for entrypoint in entrypoints_list
+                entrypoint not in router['entryPoints']
+                for entrypoint in entrypoints_list
         ):
             continue
 
@@ -189,8 +202,11 @@ def main():
     # Validate Cloudflare global API key
     try:
         get_cloudflare_zones()
-    except Exception:
-        print("Invalid Cloudflare global API key")
+    except CloudFlareAPIError as e:
+        if 'unknown x-auth-key or x-auth-email' not in str(e).lower():
+            raise
+
+        print("Invalid Cloudflare global API key or email")
         return
 
     # Initialize variables
@@ -204,8 +220,7 @@ def main():
             if new_wan_ips != last_wan_ips:
                 print(f"WAN IPs changed to {new_wan_ips}")
                 last_wan_ips = new_wan_ips
-                update_cloudflare_records(new_routers, new_wan_ips)
-
+                update_cloudflare_records(new_routers, last_wan_ips)
             added_routers = {k: v for k, v in new_routers.items() if k not in routers}
             routers = new_routers
             if added_routers:
@@ -215,7 +230,7 @@ def main():
         except Exception as e:
             print(f"Error: {e}")
 
-        time.sleep(10)
+        time.sleep(DELAY)
 
 
 if __name__ == "__main__":
