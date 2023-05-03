@@ -231,7 +231,7 @@ def main():
 
     # Validate Cloudflare global API key
     try:
-        get_cloudflare_zones()
+        get_cloudflare_zones(cf, per_page=5)
     except CloudFlareAPIError as e:
         if 'unknown x-auth-key or x-auth-email' not in str(e).lower():
             raise
