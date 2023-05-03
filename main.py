@@ -9,6 +9,7 @@ import sys
 from CloudFlare.exceptions import CloudFlareAPIError
 import logging
 from sys import stdout
+import math
 
 # Define logger
 logger = logging.getLogger('mylogger')
@@ -100,14 +101,30 @@ def get_traefik_routers():
     return response.json()
 
 
-def get_cloudflare_zones():
-    """Returns all Cloudflare zones"""
-    return cf.zones.get()
+def get_cloudflare_zones(cf, per_page=50):
+    """Returns all Cloudflare zones with pagination."""
+    zones = []
+    current_page = 1
+
+    # Get the initial response to determine the total number of pages
+    response = cf.zones.get(params={"per_page": per_page, "page": current_page})
+    total_zones = len(response)
+    total_pages = math.ceil(total_zones / per_page)
+
+    # Add zones from the initial response
+    zones.extend(response)
+
+    # Iterate through the remaining pages
+    for current_page in range(2, total_pages + 1):
+        response = cf.zones.get(params={"per_page": per_page, "page": current_page})
+        zones.extend(response)
+
+    return zones
 
 
 def get_zone_id(domain):
     """Returns zone ID for the given domain"""
-    zones = get_cloudflare_zones()
+    zones = get_cloudflare_zones(cf, per_page=50)
     return next((zone['id'] for zone in zones if zone['name'] == domain), None)
 
 

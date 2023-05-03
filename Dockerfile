@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py ./
 
-ENTRYPOINT ["python3", "-u", "/usr/src/app/main.py"]
+ENTRYPOINT ["python3", "/usr/src/app/main.py"]
