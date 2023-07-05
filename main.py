@@ -178,7 +178,7 @@ def update_cloudflare_records(routers, wan_ips):
             if host in existing_records:
                 record = existing_records[host]
                 if record['content'] != ip:
-                    logger.info(f"Updating {record_type} record for {host}")
+                    logger.info(f"Updating {record_type} record for {host} - proxied: {record['proxied']}")
                     cf.zones.dns_records.put(zone_id, record['id'], data={
                         'type': record_type,
                         'name': host,
@@ -186,7 +186,7 @@ def update_cloudflare_records(routers, wan_ips):
                         'proxied': record['proxied']
                     })
             else:
-                logger.info(f"Adding {record_type} record for {host}")
+                logger.info(f"Adding {record_type} record for {host} - proxied: {CLOUDFLARE_PROXY_DEFAULT}")
                 cf.zones.dns_records.post(zone_id, data={
                     'type': record_type,
                     'name': host,
