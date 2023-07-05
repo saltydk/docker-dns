@@ -23,7 +23,7 @@ logger.addHandler(consoleHandler)
 # Your Cloudflare global API key and email
 CLOUDFLARE_API_KEY = os.environ.get('CLOUDFLARE_API_KEY')
 CLOUDFLARE_EMAIL = os.environ.get('CLOUDFLARE_EMAIL')
-CLOUDFLARE_PROXY_DEFAULT = os.environ.get('CLOUDFLARE_PROXY_DEFAULT', False)
+CLOUDFLARE_PROXY_DEFAULT = os.environ.get('CLOUDFLARE_PROXY_DEFAULT', "False").lower() in ('true', '1', 't')
 
 # Traefik API URL
 TRAEFIK_API_URL = os.environ.get('TRAEFIK_API_URL')
@@ -191,7 +191,7 @@ def update_cloudflare_records(routers, wan_ips):
                     'type': record_type,
                     'name': host,
                     'content': ip,
-                    'proxied': bool(CLOUDFLARE_PROXY_DEFAULT)
+                    'proxied': CLOUDFLARE_PROXY_DEFAULT
                 })
 
     for router in routers.values():
