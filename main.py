@@ -220,8 +220,7 @@ def update_cloudflare_records(routers, wan_ips):
 
 def main():
     """Main loop"""
-    logger.info(f"Saltbox Cloudflare DNS container starting in {DELAY} seconds.")
-    time.sleep(int(DELAY))
+    logger.info("Saltbox Cloudflare DNS container starting.")
     
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
@@ -240,6 +239,9 @@ def main():
         logger.error("Invalid Cloudflare global API key or email")
         return
 
+    # Small delay to ensure Traefik container is running
+    time.sleep(10)
+    
     # Initialize variables
     first_run = True
     last_wan_ips = {}
