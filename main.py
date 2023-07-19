@@ -220,8 +220,9 @@ def update_cloudflare_records(routers, wan_ips):
 
 def main():
     """Main loop"""
-    logger.info("Saltbox Cloudflare DNS container starting.")
-
+    logger.info(f"Saltbox Cloudflare DNS container starting in {DELAY} seconds.")
+    time.sleep(int(DELAY))
+    
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
         logger.error(
