@@ -251,6 +251,8 @@ def main():
         try:
             new_routers = {router['name']: router for router in get_traefik_routers()}
             new_wan_ips = get_wan_ips()
+            if not first_run:
+                logger.debug(f"Previous WAN IPs: {last_wan_ips} - Current: {new_wan_ips}")
             if new_wan_ips != last_wan_ips:
                 logger.info(f"WAN IPs changed to {new_wan_ips}")
                 last_wan_ips = new_wan_ips
