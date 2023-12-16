@@ -10,6 +10,7 @@ from CloudFlare.exceptions import CloudFlareAPIError
 import logging
 from sys import stdout
 import math
+from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 
 # Define logger
 logger = logging.getLogger('mylogger')
@@ -40,6 +41,8 @@ DELAY = os.environ.get('DELAY', 60)
 # Initialize Cloudflare client
 cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, key=CLOUDFLARE_API_KEY)
 
+# Global Variables
+failed_hosts = []
 
 def is_valid_wan_ip(ip):
     try:
@@ -76,7 +79,8 @@ def get_wan_ip(ip_version):
                 continue
 
         if attempts < max_tries:
-            logger.warning(f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
+            logger.warning(
+                f"Failed to obtain a valid WAN IPv{ip_version} address. Retrying in {delay_between_attempts} seconds.")
             time.sleep(delay_between_attempts)
 
     logger.error(f"Failed to obtain a valid WAN IPv{ip_version} address after {max_tries} tries")
@@ -128,7 +132,27 @@ def get_zone_id(domain):
     return next((zone['id'] for zone in zones if zone['name'] == domain), None)
 
 
-def update_cloudflare_records(routers, wan_ips):
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def update_record(zone_id, record_id, record_type, host, ip, proxied):
+    cf.zones.dns_records.put(zone_id, record_id, data={
+        'type': record_type,
+        'name': host,
+        'content': ip,
+        'proxied': proxied
+    })
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def add_record(zone_id, record_type, host, ip, proxied):
+    cf.zones.dns_records.post(zone_id, data={
+        'type': record_type,
+        'name': host,
+        'content': ip,
+        'proxied': proxied
+    })
+
+
+def update_cloudflare_records(routers, wan_ips, first_run=False):
     """Updates Cloudflare DNS records for the given http routers and WAN IPs"""
     processed_zones = {}
     processed_hosts = set()  # Keep track of processed rule hosts
@@ -177,22 +201,25 @@ def update_cloudflare_records(routers, wan_ips):
 
             if host in existing_records:
                 record = existing_records[host]
-                if record['content'] != ip:
+
+                if record['content'] == ip:
+                    if first_run:
+                        logger.info(f"{record_type} record for {host} is already updated.")
+                    continue
+
+                else:
                     logger.info(f"Updating {record_type} record for {host} - proxied: {record['proxied']}")
-                    cf.zones.dns_records.put(zone_id, record['id'], data={
-                        'type': record_type,
-                        'name': host,
-                        'content': ip,
-                        'proxied': record['proxied']
-                    })
+                    try:
+                        update_record(zone_id, record['id'], record_type, host, ip, record['proxied'])
+                    except RetryError:
+                        failed_hosts.append(host)
+
             else:
                 logger.info(f"Adding {record_type} record for {host} - proxied: {CLOUDFLARE_PROXY_DEFAULT}")
-                cf.zones.dns_records.post(zone_id, data={
-                    'type': record_type,
-                    'name': host,
-                    'content': ip,
-                    'proxied': CLOUDFLARE_PROXY_DEFAULT
-                })
+                try:
+                    add_record(zone_id, record_type, host, ip, CLOUDFLARE_PROXY_DEFAULT)
+                except RetryError:
+                    failed_hosts.append(host)
 
     for router in routers.values():
         # Check if router is using one of the given entrypoints
@@ -221,7 +248,7 @@ def update_cloudflare_records(routers, wan_ips):
 def main():
     """Main loop"""
     logger.info("Saltbox Cloudflare DNS container starting.")
-    
+
     # Check if all required environment variables are set
     if not all([CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, TRAEFIK_API_URL, IP_VERSION]):
         logger.error(
@@ -241,30 +268,48 @@ def main():
 
     # Small delay to ensure Traefik container is running
     time.sleep(10)
-    
+
     # Initialize variables
     first_run = True
-    last_wan_ips = {}
+    wan_ips = {}
     routers = {router['name']: router for router in get_traefik_routers()}
 
     while True:
         try:
             new_routers = {router['name']: router for router in get_traefik_routers()}
             new_wan_ips = get_wan_ips()
+
             if not first_run:
-                logger.debug(f"Previous WAN IPs: {last_wan_ips} - Current: {new_wan_ips}")
-            if new_wan_ips != last_wan_ips:
+                logger.debug(f"Previous WAN IPs: {wan_ips} - Current: {new_wan_ips}")
+
+            if new_wan_ips != wan_ips:
                 logger.info(f"WAN IPs changed to {new_wan_ips}")
-                last_wan_ips = new_wan_ips
-                update_cloudflare_records(new_routers, last_wan_ips)
+                wan_ips = new_wan_ips
+
+            # Generate a copy of failed_hosts
+            prev_failed_hosts = failed_hosts.copy()
+            update_cloudflare_records(new_routers, wan_ips, first_run)
+
+            # If any hosts failed previously, try them again
+            if prev_failed_hosts:
+                logger.info(f"Retrying failed hosts: {prev_failed_hosts}")
+
+            for host in prev_failed_hosts:
+                if host in failed_hosts:
+                    logger.info(f"Host {host} failed again.")
+                else:
+                    logger.info(f"Host {host} succeeded on retry.")
+
             added_routers = {k: v for k, v in new_routers.items() if k not in routers}
             routers = new_routers
             if added_routers:
-                update_cloudflare_records(added_routers, new_wan_ips)
+                update_cloudflare_records(added_routers, wan_ips)
+
             elif first_run:
                 first_run = False
             else:
                 logger.info("No new routers found")
+
         except Exception as e:
             logger.error(f"{e}")
 
