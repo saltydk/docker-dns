@@ -230,14 +230,12 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
             continue
 
         rule = router.get('rule', '')
-        host_match = re.search(r"Host\(`(.*?)`\)", rule)
-        if not host_match:
-            continue
-
-        host = host_match[1]
-        if host not in processed_hosts:
-            process_host(host)
-            processed_hosts.add(host)
+        host_matches = re.findall(r"Host\(`(.*?)`\)", rule)
+        for host_match in host_matches:
+            host = host_match
+            if host not in processed_hosts:
+                process_host(host)
+                processed_hosts.add(host)
 
     for custom_url in custom_urls:
         if custom_url not in processed_hosts:
