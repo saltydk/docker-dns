@@ -44,12 +44,16 @@ cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, key=CLOUDFLARE_API_KEY)
 # Global Variables
 failed_hosts = []
 
-def is_valid_wan_ip(ip):
+def is_valid_wan_ip(ip, version):
     try:
         ip_obj = ipaddress.ip_address(ip)
-        return not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
+        if version == 4:
+            return ip_obj.version == 4 and not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
+        elif version == 6:
+            return ip_obj.version == 6 and not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
     except ValueError:
         return False
+    return False
 
 
 def get_wan_ip(ip_version):
@@ -73,8 +77,10 @@ def get_wan_ip(ip_version):
                     if 'json' in service_url
                     else response.text.strip()
                 )
-                if is_valid_wan_ip(ip_address):
+                if is_valid_wan_ip(ip_address, ip_version):
                     return ip_address
+                else:
+                    continue
             except (requests.RequestException, ValueError):
                 continue
 
