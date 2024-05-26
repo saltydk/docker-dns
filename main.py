@@ -158,6 +158,11 @@ def add_record(zone_id, record_type, host, ip, proxied):
     })
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def delete_record(zone_id, record_id):
+    cf.zones.dns_records.delete(zone_id, record_id)
+
+
 def update_cloudflare_records(routers, wan_ips, first_run=False):
     """Updates Cloudflare DNS records for the given http routers and WAN IPs"""
     processed_zones = {}
@@ -226,6 +231,14 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
                     add_record(zone_id, record_type, host, ip, CLOUDFLARE_PROXY_DEFAULT)
                 except RetryError:
                     failed_hosts.append(host)
+
+        if IP_VERSION != '6' and IP_VERSION != 'both' and host in existing_aaaa_records:
+            record = existing_aaaa_records[host]
+            logger.info(f"Removing AAAA record for {host} - not using IPv6")
+            try:
+                delete_record(zone_id, record['id'])
+            except RetryError:
+                failed_hosts.append(host)
 
     for router in routers.values():
         # Check if router is using one of the given entrypoints
