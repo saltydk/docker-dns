@@ -2,14 +2,12 @@ import os
 import re
 import time
 import requests
-import CloudFlare
+import cloudflare
 import tldextract
 import ipaddress
 import sys
-from CloudFlare.exceptions import CloudFlareAPIError
 import logging
 from sys import stdout
-import math
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 
 # Define logger
@@ -39,18 +37,25 @@ IP_VERSION = os.environ.get('IP_VERSION', 'both')
 DELAY = os.environ.get('DELAY', 60)
 
 # Initialize Cloudflare client
-cf = CloudFlare.CloudFlare(email=CLOUDFLARE_EMAIL, key=CLOUDFLARE_API_KEY)
+cf = cloudflare.Cloudflare(api_email=CLOUDFLARE_EMAIL, api_key=CLOUDFLARE_API_KEY)
 
 # Global Variables
 failed_hosts = []
+
 
 def is_valid_wan_ip(ip, version):
     try:
         ip_obj = ipaddress.ip_address(ip)
         if version == 4:
-            return ip_obj.version == 4 and not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
+            return (ip_obj.version == 4 and
+                    not ip_obj.is_private and
+                    not ip_obj.is_loopback and
+                    not ip_obj.is_unspecified)
         elif version == 6:
-            return ip_obj.version == 6 and not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_unspecified
+            return (ip_obj.version == 6 and
+                    not ip_obj.is_private and
+                    not ip_obj.is_loopback and
+                    not ip_obj.is_unspecified)
     except ValueError:
         return False
     return False
@@ -111,31 +116,14 @@ def get_traefik_routers():
     return response.json()
 
 
-def get_cloudflare_zones(cf, per_page=50):
-    """Returns all Cloudflare zones with pagination."""
-    zones = []
-    current_page = 1
-
-    # Get the initial response to determine the total number of pages
-    response = cf.zones.get(params={"per_page": per_page, "page": current_page})
-    total_zones = len(response)
-    total_pages = math.ceil(total_zones / per_page)
-
-    # Add zones from the initial response
-    zones.extend(response)
-
-    # Iterate through the remaining pages
-    for current_page in range(2, total_pages + 1):
-        response = cf.zones.get(params={"per_page": per_page, "page": current_page})
-        zones.extend(response)
-
-    return zones
+def get_cloudflare_zones(cf_client):
+    """Returns all Cloudflare zones"""
+    return cf_client.zones.list()
 
 
 def get_zone_id(domain):
     """Returns zone ID for the given domain"""
-    zones = get_cloudflare_zones(cf, per_page=50)
-    return next((zone['id'] for zone in zones if zone['name'] == domain), None)
+    return next((zone.id for zone in get_cloudflare_zones(cf) if zone.name == domain), None)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -171,8 +159,9 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
     custom_urls = [url.strip() for url in CUSTOM_URLS.split(',') if url.strip()]
 
     def process_host(host):
+        host = host.lower()
         extracted_domain = tldextract.extract(host)
-        root_domain = ".".join(extracted_domain[1:])
+        root_domain = extracted_domain.registered_domain
 
         if not extracted_domain.suffix:
             return
@@ -186,18 +175,13 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
                 return
 
             dns_records = []
-            page_num = 1
-            while True:
-                page_records = cf.zones.dns_records.get(zone_id, params={'page': page_num})
-                if not page_records:
-                    break
-                dns_records.extend(page_records)
-                page_num += 1
+            for dns_record in cf.dns.records.list(zone_id=zone_id):
+                dns_records.append(dns_record)
 
             processed_zones[root_domain] = (zone_id, dns_records)
 
-        existing_a_records = {record['name']: record for record in dns_records if record['type'] == 'A'}
-        existing_aaaa_records = {record['name']: record for record in dns_records if record['type'] == 'AAAA'}
+        existing_a_records = {record.name: record for record in dns_records if record.type == 'A'}
+        existing_aaaa_records = {record.name: record for record in dns_records if record.type == 'AAAA'}
 
         for ip_version, ip in wan_ips.items():
             if ip_version == 4:
@@ -213,15 +197,15 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
             if host in existing_records:
                 record = existing_records[host]
 
-                if record['content'] == ip:
+                if record.content == ip:
                     if first_run:
-                        logger.info(f"{record_type} record for {host} is already updated.")
+                        logger.debug(f"{record_type} record for {host} is already updated.")
                     continue
 
                 else:
-                    logger.info(f"Updating {record_type} record for {host} - proxied: {record['proxied']}")
+                    logger.info(f"Updating {record_type} record for {host} - proxied: {record.proxied}")
                     try:
-                        update_record(zone_id, record['id'], record_type, host, ip, record['proxied'])
+                        update_record(zone_id, record.id, record_type, host, ip, record.proxied)
                     except RetryError:
                         failed_hosts.append(host)
 
@@ -236,7 +220,7 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
             record = existing_aaaa_records[host]
             logger.info(f"Removing AAAA record for {host} - not using IPv6")
             try:
-                delete_record(zone_id, record['id'])
+                delete_record(zone_id, record.id)
             except RetryError:
                 failed_hosts.append(host)
 
@@ -251,10 +235,9 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
         rule = router.get('rule', '')
         host_matches = re.findall(r"Host\(`(.*?)`\)", rule)
         for host_match in host_matches:
-            host = host_match
-            if host not in processed_hosts:
-                process_host(host)
-                processed_hosts.add(host)
+            if host_match not in processed_hosts:
+                process_host(host_match)
+                processed_hosts.add(host_match)
 
     for custom_url in custom_urls:
         if custom_url not in processed_hosts:
@@ -275,8 +258,8 @@ def main():
 
     # Validate Cloudflare global API key
     try:
-        get_cloudflare_zones(cf, per_page=5)
-    except CloudFlareAPIError as e:
+        get_cloudflare_zones(cf)
+    except cloudflare.APIConnectionError as e:
         if 'unknown x-auth-key or x-auth-email' not in str(e).lower():
             raise
 
@@ -311,11 +294,11 @@ def main():
             if prev_failed_hosts:
                 logger.info(f"Retrying failed hosts: {prev_failed_hosts}")
 
-            for host in prev_failed_hosts:
-                if host in failed_hosts:
-                    logger.info(f"Host {host} failed again.")
+            for prev_failed_host in prev_failed_hosts:
+                if prev_failed_host in failed_hosts:
+                    logger.info(f"Host {prev_failed_host} failed again.")
                 else:
-                    logger.info(f"Host {host} succeeded on retry.")
+                    logger.info(f"Host {prev_failed_host} succeeded on retry.")
 
             added_routers = {k: v for k, v in new_routers.items() if k not in routers}
             routers = new_routers

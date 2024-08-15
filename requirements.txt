@@ -1,4 +1,4 @@
-requests==2.31.0
-cloudflare~=2.11.6
-tldextract==3.4.4
-tenacity~=8.2.3
+requests==2.32.3
+cloudflare==3.1.0
+tldextract==5.1.2
+tenacity==9.0.0
