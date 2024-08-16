@@ -128,27 +128,27 @@ def get_zone_id(domain):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def update_record(zone_id, record_id, record_type, host, ip, proxied):
-    cf.zones.dns_records.put(zone_id, record_id, data={
-        'type': record_type,
-        'name': host,
-        'content': ip,
-        'proxied': proxied
-    })
+    try:
+        cf.dns.records.update(zone_id=zone_id, dns_record_id=record_id, type=record_type, name=host, content=ip,
+                              proxied=proxied)
+    except Exception as e:
+        logger.error(f"Error updating record: {e}")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def add_record(zone_id, record_type, host, ip, proxied):
-    cf.zones.dns_records.post(zone_id, data={
-        'type': record_type,
-        'name': host,
-        'content': ip,
-        'proxied': proxied
-    })
+    try:
+        cf.dns.records.create(zone_id=zone_id, type=record_type, name=host, content=ip, proxied=proxied)
+    except Exception as e:
+        logger.error(f"Error adding record: {e}")
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def delete_record(zone_id, record_id):
-    cf.zones.dns_records.delete(zone_id, record_id)
+    try:
+        cf.dns.records.delete(zone_id=zone_id, dns_record_id=record_id)
+    except Exception as e:
+        logger.error(f"Error deleting record: {e}")
 
 
 def update_cloudflare_records(routers, wan_ips, first_run=False):
