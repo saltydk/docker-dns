@@ -30,7 +30,7 @@ TRAEFIK_ENTRYPOINTS = os.environ.get('TRAEFIK_ENTRYPOINTS')
 
 CUSTOM_URLS = os.environ.get('CUSTOM_URLS', '')
 
-# IP Version: '4' for IPv4 only, '6' for IPv6 only, or "both" for both IPv4 and IPv6
+# IP Version: '4' for IPv4 only, '6' for IPv6 only, or "both" for IPv4 and IPv6
 IP_VERSION = os.environ.get('IP_VERSION', 'both')
 
 # Delay
@@ -44,6 +44,16 @@ failed_hosts = []
 
 
 def is_valid_wan_ip(ip, version):
+    """
+    Check if the provided IP address is a valid WAN IP address.
+
+    Args:
+        ip (str): The IP address to validate.
+        version (int): The IP version to validate against (4 for IPv4, 6 for IPv6).
+
+    Returns:
+        bool: True if the IP is a valid WAN IP address, False otherwise.
+    """
     try:
         ip_obj = ipaddress.ip_address(ip)
         if version == 4:
@@ -62,7 +72,18 @@ def is_valid_wan_ip(ip, version):
 
 
 def get_wan_ip(ip_version):
-    """Returns WAN IP for the given IP version or exits the program after X amount of tries"""
+    """
+    Retrieve a valid WAN IP address of the specified version using multiple services.
+
+    Args:
+        ip_version (int): The IP version to retrieve (4 for IPv4, 6 for IPv6).
+
+    Returns:
+        str: The valid WAN IP address of the specified version.
+
+    Raises:
+        SystemExit: If a valid WAN IP address cannot be obtained after multiple attempts.
+    """
     ip_services = [
         f"https://ipify{'6' if ip_version == 6 else ''}.saltbox.dev?format=json",
         f"https://api{'6' if ip_version == 6 else '4'}.ipify.org?format=json",
@@ -99,7 +120,15 @@ def get_wan_ip(ip_version):
 
 
 def get_wan_ips():
-    """Returns WAN IPs for both IPv4 and IPv6 if IP_VERSION is set to "both", else returns IP for the set version"""
+    """
+    Retrieve WAN IP addresses for the specified IP version(s).
+
+    Returns:
+        dict: A dictionary containing the WAN IP address(es) for the specified IP version(s).
+
+    Raises:
+        ValueError: If an invalid IP version is provided.
+    """
     if IP_VERSION == "both":
         return {4: get_wan_ip(4), 6: get_wan_ip(6)}
     elif IP_VERSION == '4':
@@ -111,48 +140,107 @@ def get_wan_ips():
 
 
 def get_traefik_routers():
-    """Returns Traefik http routers from the given API URL"""
+    """
+    Retrieve the list of Traefik routers from the specified API URL.
+
+    Returns:
+        dict: A dictionary containing the list of Traefik routers.
+    """
     response = requests.get(f"{TRAEFIK_API_URL}/api/http/routers")
     return response.json()
 
 
 def get_cloudflare_zones(cf_client):
-    """Returns all Cloudflare zones"""
+    """
+    Retrieve a list of Cloudflare zones using the provided Cloudflare client.
+
+    Args:
+        cf_client: The Cloudflare client object.
+
+    Returns:
+        list: A list of Cloudflare zones.
+    """
     return cf_client.zones.list()
 
 
 def get_zone_id(domain):
-    """Returns zone ID for the given domain"""
+    """
+    Retrieve the Cloudflare zone ID for the specified domain.
+
+    Args:
+        domain (str): The domain name to get the zone ID for.
+
+    Returns:
+        str: The Cloudflare zone ID for the domain, or None if not found.
+    """
     return next((zone.id for zone in get_cloudflare_zones(cf) if zone.name == domain), None)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def update_record(zone_id, record_id, record_type, host, ip, proxied):
+    """
+    Update a DNS record in the specified Cloudflare zone.
+
+    Args:
+        zone_id (str): The ID of the Cloudflare zone.
+        record_id (str): The ID of the DNS record to update.
+        record_type (str): The type of DNS record to update.
+        host (str): The hostname for the DNS record.
+        ip (str): The new IP address associated with the DNS record.
+        proxied (bool): Whether the DNS record is proxied through Cloudflare.
+    """
     try:
         cf.dns.records.update(zone_id=zone_id, dns_record_id=record_id, type=record_type, name=host, content=ip,
                               proxied=proxied)
     except Exception as e:
         logger.error(f"Error updating record: {e}")
+        raise
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def add_record(zone_id, record_type, host, ip, proxied):
+    """
+    Add a DNS record to the specified Cloudflare zone.
+
+    Args:
+        zone_id (str): The ID of the Cloudflare zone.
+        record_type (str): The type of DNS record to add.
+        host (str): The hostname for the DNS record.
+        ip (str): The IP address associated with the DNS record.
+        proxied (bool): Whether the DNS record is proxied through Cloudflare.
+    """
     try:
         cf.dns.records.create(zone_id=zone_id, type=record_type, name=host, content=ip, proxied=proxied)
     except Exception as e:
         logger.error(f"Error adding record: {e}")
+        raise
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def delete_record(zone_id, record_id):
+    """
+    Delete a DNS record from the specified Cloudflare zone.
+
+    Args:
+        zone_id (str): The ID of the Cloudflare zone.
+        record_id (str): The ID of the DNS record to delete.
+    """
     try:
         cf.dns.records.delete(zone_id=zone_id, dns_record_id=record_id)
     except Exception as e:
         logger.error(f"Error deleting record: {e}")
+        raise
 
 
 def update_cloudflare_records(routers, wan_ips, first_run=False):
-    """Updates Cloudflare DNS records for the given http routers and WAN IPs"""
+    """
+    Update Cloudflare DNS records based on the provided routers and WAN IP addresses.
+
+    Args:
+        routers (dict): A dictionary of routers.
+        wan_ips (dict): A dictionary of WAN IP addresses.
+        first_run (bool, optional): Flag indicating if it's the first run. Defaults to False.
+    """
     processed_zones = {}
     processed_hosts = set()  # Keep track of processed rule hosts
     entrypoints_list = [entrypoint.strip() for entrypoint in TRAEFIK_ENTRYPOINTS.split(',')]
@@ -174,6 +262,8 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
                 logger.warning(f"Zone ID for domain {root_domain} not found")
                 return
 
+            logger.debug(f"Zone ID for domain {root_domain} is {zone_id}")
+
             dns_records = []
             for dns_record in cf.dns.records.list(zone_id=zone_id):
                 dns_records.append(dns_record)
@@ -182,6 +272,18 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
 
         existing_a_records = {record.name: record for record in dns_records if record.type == 'A'}
         existing_aaaa_records = {record.name: record for record in dns_records if record.type == 'AAAA'}
+        existing_cname_records = {record.name: record for record in dns_records if record.type == 'CNAME'}
+
+        # Check for CNAME and do cleanup if needed
+        if host in existing_cname_records:
+            cname_record = existing_cname_records[host]
+            logger.info(f"Found CNAME record for {host}.")
+            try:
+                delete_record(zone_id, cname_record.id)
+                logger.info(f"Deleted CNAME record for {host}")
+            except RetryError:
+                failed_hosts.append(host)
+                return
 
         for ip_version, ip in wan_ips.items():
             if ip_version == 4:
@@ -246,7 +348,9 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
 
 
 def main():
-    """Main loop"""
+    """
+    Main function to manage updating Cloudflare DNS records based on Traefik routers and WAN IP changes.
+    """
     logger.info("Saltbox Cloudflare DNS container starting.")
 
     # Check if all required environment variables are set
