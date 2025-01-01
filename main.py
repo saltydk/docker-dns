@@ -141,13 +141,47 @@ def get_wan_ips():
 
 def get_traefik_routers():
     """
-    Retrieve the list of Traefik routers from the specified API URL.
+    Retrieve the complete list of Traefik routers from the specified API URL with pagination support.
+    By default, returns up to 100 results per page.
 
     Returns:
-        dict: A dictionary containing the list of Traefik routers.
+        list[dict]: A list of Traefik router dictionaries.
     """
-    response = requests.get(f"{TRAEFIK_API_URL}/api/http/routers")
-    return response.json()
+    all_routers = []
+    current_page = 1
+    per_page = 100
+    has_more_pages = True
+
+    while has_more_pages:
+        try:
+            response = requests.get(
+                f"{TRAEFIK_API_URL}/api/http/routers",
+                params={'page': current_page, 'per_page': per_page}
+            )
+            response.raise_for_status()
+
+            # Check if we got any routers
+            if not (page_routers := response.json()):
+                has_more_pages = False
+                continue
+
+            # Add page results to our list
+            all_routers.extend(page_routers)
+
+            # Check next page - defaults to current page if header is missing
+            next_page = int(response.headers.get('X-Next-Page', current_page))
+
+            # Stop if we're not getting a new page number
+            if next_page <= current_page:
+                has_more_pages = False
+            else:
+                current_page = next_page
+
+        except requests.RequestException as e:
+            logger.error(f"Error fetching Traefik routers page {current_page}: {e}")
+            has_more_pages = False
+
+    return all_routers
 
 
 def get_cloudflare_zones(cf_client):
