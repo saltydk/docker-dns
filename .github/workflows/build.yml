@@ -5,6 +5,8 @@ on:
     - cron: '20 20 * * *'
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths-ignore:
       - '.github/**'
       - '*.md'
