@@ -218,14 +218,45 @@ def update_record(zone_id, record_id, record_type, host, ip, proxied):
     Args:
         zone_id (str): The ID of the Cloudflare zone.
         record_id (str): The ID of the DNS record to update.
-        record_type (str): The type of DNS record to update.
+        record_type (str): The type of DNS record to update ('A' or 'AAAA').
         host (str): The hostname for the DNS record.
         ip (str): The new IP address associated with the DNS record.
         proxied (bool): Whether the DNS record is proxied through Cloudflare.
     """
     try:
-        cf.dns.records.update(zone_id=zone_id, dns_record_id=record_id, type=record_type, name=host, content=ip,
-                              proxied=proxied)
+        # Call update with explicit type parameter based on record_type
+        kwargs = {
+            'zone_id': zone_id,
+            'dns_record_id': record_id,
+            'name': host,
+            'content': ip,
+            'proxied': proxied
+        }
+
+        if record_type == 'A':
+            kwargs['type'] = 'A'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'AAAA':
+            kwargs['type'] = 'AAAA'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'CNAME':
+            kwargs['type'] = 'CNAME'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'TXT':
+            kwargs['type'] = 'TXT'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'MX':
+            kwargs['type'] = 'MX'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'NS':
+            kwargs['type'] = 'NS'
+            cf.dns.records.update(**kwargs)
+        elif record_type == 'PTR':
+            kwargs['type'] = 'PTR'
+            cf.dns.records.update(**kwargs)
+        else:
+            logger.error(f"Unsupported record type: {record_type}")
+            raise ValueError(f"Unsupported record type: {record_type}")
     except Exception as e:
         logger.error(f"Error updating record: {e}")
         raise
@@ -244,7 +275,37 @@ def add_record(zone_id, record_type, host, ip, proxied):
         proxied (bool): Whether the DNS record is proxied through Cloudflare.
     """
     try:
-        cf.dns.records.create(zone_id=zone_id, type=record_type, name=host, content=ip, proxied=proxied)
+        kwargs = {
+            'zone_id': zone_id,
+            'name': host,
+            'content': ip,
+            'proxied': proxied
+        }
+
+        if record_type == 'A':
+            kwargs['type'] = 'A'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'AAAA':
+            kwargs['type'] = 'AAAA'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'CNAME':
+            kwargs['type'] = 'CNAME'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'TXT':
+            kwargs['type'] = 'TXT'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'MX':
+            kwargs['type'] = 'MX'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'NS':
+            kwargs['type'] = 'NS'
+            cf.dns.records.create(**kwargs)
+        elif record_type == 'PTR':
+            kwargs['type'] = 'PTR'
+            cf.dns.records.create(**kwargs)
+        else:
+            logger.error(f"Unsupported record type: {record_type}")
+            raise ValueError(f"Unsupported record type: {record_type}")
     except Exception as e:
         logger.error(f"Error adding record: {e}")
         raise
