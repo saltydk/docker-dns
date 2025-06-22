@@ -344,7 +344,7 @@ def update_cloudflare_records(routers, wan_ips, first_run=False):
     def process_host(host):
         host = host.lower()
         extracted_domain = tldextract.extract(host)
-        root_domain = extracted_domain.registered_domain
+        root_domain = extracted_domain.top_domain_under_public_suffix
 
         if not extracted_domain.suffix:
             return
