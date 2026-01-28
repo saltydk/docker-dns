@@ -119,7 +119,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		} else if firstRun {
 			firstRun = false
 		} else {
-			e.logger.Info("No new routers found")
+			e.logger.Info("No new routers found", "routers", len(newRouters))
 		}
 
 		if err := sleepWithContext(ctx, e.cfg.Delay); err != nil {
@@ -140,6 +140,12 @@ func (e *Engine) updateCloudflareRecords(
 	firstRun bool,
 	failedHosts map[string]struct{},
 ) {
+	if firstRun {
+		e.logger.Info("Initial DNS validation/update starting", "routers", len(routers))
+	} else {
+		e.logger.Info("DNS update pass starting", "routers", len(routers))
+	}
+
 	zones, err := e.cf.ListZones(ctx)
 	if err != nil {
 		e.logger.Error("Failed to list Cloudflare zones", "error", err)
@@ -300,6 +306,24 @@ func (e *Engine) updateCloudflareRecords(
 		}
 		processHost(host)
 		processedHosts[host] = struct{}{}
+	}
+
+	if firstRun {
+		e.logger.Info(
+			"Initial DNS validation/update complete",
+			"routers", len(routers),
+			"hosts", len(processedHosts),
+			"zones", len(processedZones),
+			"failed_hosts", len(failedHosts),
+		)
+	} else {
+		e.logger.Info(
+			"DNS update pass complete",
+			"routers", len(routers),
+			"hosts", len(processedHosts),
+			"zones", len(processedZones),
+			"failed_hosts", len(failedHosts),
+		)
 	}
 }
 
