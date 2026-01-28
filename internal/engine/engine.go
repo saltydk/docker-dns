@@ -245,7 +245,7 @@ func (e *Engine) updateCloudflareRecords(
 						Type:    recordType,
 						Name:    host,
 						Content: ip,
-						Proxied: proxied,
+						Proxied: &proxied,
 					})
 					return err
 				})
@@ -261,7 +261,7 @@ func (e *Engine) updateCloudflareRecords(
 						Type:    recordType,
 						Name:    host,
 						Content: ip,
-						Proxied: proxied,
+						Proxied: &proxied,
 					})
 					return err
 				})
@@ -365,19 +365,18 @@ func copySet(in map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-func proxiedForCreate(recordType string, defaultValue bool) *bool {
+func proxiedForCreate(recordType string, defaultValue bool) bool {
 	switch recordType {
 	case "A", "AAAA", "CNAME":
-		v := defaultValue
-		return &v
+		return defaultValue
 	default:
-		return nil
+		return false
 	}
 }
 
-func proxiedForUpdate(record cloudflare.DNSRecord, recordType string, defaultValue bool) *bool {
+func proxiedForUpdate(record cloudflare.DNSRecord, recordType string, defaultValue bool) bool {
 	if record.Proxied != nil {
-		return record.Proxied
+		return *record.Proxied
 	}
 	return proxiedForCreate(recordType, defaultValue)
 }

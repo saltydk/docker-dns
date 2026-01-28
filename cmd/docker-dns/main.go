@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -71,6 +72,10 @@ func main() {
 	defer stop()
 
 	if err := eng.Run(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Info("Engine stopped", "reason", "context canceled")
+			return
+		}
 		logger.Error("Engine stopped", "error", err)
 		os.Exit(1)
 	}
