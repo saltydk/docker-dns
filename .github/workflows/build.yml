@@ -75,6 +75,7 @@ jobs:
         run: |
           echo "git_commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "go_version=$(awk '/^go /{print $2}' go.mod)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         id: docker_build
@@ -83,6 +84,7 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
+            GO_VERSION=${{ steps.build_meta.outputs.go_version }}
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ steps.build_meta.outputs.git_commit }}
             BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
@@ -116,6 +118,7 @@ jobs:
         run: |
           echo "git_commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "go_version=$(awk '/^go /{print $2}' go.mod)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (dev)
         uses: docker/build-push-action@v6
@@ -123,6 +126,7 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
+            GO_VERSION=${{ steps.build_meta.outputs.go_version }}
             VERSION=0.0.0-dev
             GIT_COMMIT=${{ steps.build_meta.outputs.git_commit }}
             BUILD_TIME=${{ steps.build_meta.outputs.build_time }}

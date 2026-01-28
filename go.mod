@@ -1,6 +1,6 @@
 module docker-dns
 
-go 1.24.0
+go 1.25
 
 require (
 	github.com/cloudflare/cloudflare-go/v6 v6.6.0
