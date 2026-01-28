@@ -1,0 +1,109 @@
+package traefik
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+var hostRuleRegexp = regexp.MustCompile("Host\\(`([^`]*)`\\)")
+
+// Router represents a subset of Traefik router fields.
+type Router struct {
+	Name        string   `json:"name"`
+	EntryPoints []string `json:"entryPoints"`
+	Rule        string   `json:"rule"`
+}
+
+type Client struct {
+	BaseURL string
+	Client  *http.Client
+	Logger  *slog.Logger
+}
+
+// Routers returns all routers from Traefik with pagination.
+func (c *Client) Routers(ctx context.Context) ([]Router, error) {
+	page := 1
+	perPage := 100
+	all := make([]Router, 0, 128)
+
+	for {
+		endpoint := fmt.Sprintf("%s/api/http/routers", strings.TrimRight(c.BaseURL, "/"))
+		q := url.Values{}
+		q.Set("page", strconv.Itoa(page))
+		q.Set("per_page", strconv.Itoa(perPage))
+		fullURL := endpoint + "?" + q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.httpClient().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("traefik status %d", resp.StatusCode)
+		}
+
+		var routers []Router
+		if err := json.Unmarshal(body, &routers); err != nil {
+			return nil, err
+		}
+
+		if len(routers) == 0 {
+			break
+		}
+		all = append(all, routers...)
+
+		nextPage := page
+		if header := resp.Header.Get("X-Next-Page"); header != "" {
+			if v, err := strconv.Atoi(header); err == nil {
+				nextPage = v
+			}
+		}
+		if nextPage <= page {
+			break
+		}
+		page = nextPage
+	}
+
+	return all, nil
+}
+
+// ExtractHosts returns hostnames from a Traefik rule string.
+// Only Host(`...`) with backticks is supported.
+func ExtractHosts(rule string) []string {
+	matches := hostRuleRegexp.FindAllStringSubmatch(rule, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 && m[1] != "" {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.Client != nil {
+		return c.Client
+	}
+	return http.DefaultClient
+}
