@@ -97,9 +97,12 @@ func (e *Engine) Run(ctx context.Context) error {
 			wanIPs = newWANIPs
 		}
 
+		addedRouters := diffRouters(routers, newRouters)
+		newCount := len(addedRouters)
+
 		prevFailed := copySet(failedHosts)
 		failedHosts = make(map[string]struct{})
-		e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, failedHosts)
+		e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, newCount, failedHosts)
 
 		if len(prevFailed) > 0 {
 			e.logger.Info("Retrying failed hosts", "count", len(prevFailed))
@@ -112,14 +115,11 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 		}
 
-		addedRouters := diffRouters(routers, newRouters)
 		routers = newRouters
 		if len(addedRouters) > 0 {
-			e.updateCloudflareRecords(ctx, addedRouters, wanIPs, false, failedHosts)
+			e.updateCloudflareRecords(ctx, addedRouters, wanIPs, false, len(addedRouters), failedHosts)
 		} else if firstRun {
 			firstRun = false
-		} else {
-			e.logger.Info("Router scan", "routers", len(newRouters), "new", len(addedRouters))
 		}
 
 		if err := sleepWithContext(ctx, e.cfg.Delay); err != nil {
@@ -138,12 +138,13 @@ func (e *Engine) updateCloudflareRecords(
 	routers map[string]traefik.Router,
 	wanIPs map[int]string,
 	firstRun bool,
+	newCount int,
 	failedHosts map[string]struct{},
 ) {
 	if firstRun {
-		e.logger.Info("Initial DNS validation/update starting", "routers", len(routers))
+		e.logger.Info("Initial DNS validation/update starting", "routers", len(routers), "new", newCount)
 	} else {
-		e.logger.Info("DNS update pass starting", "routers", len(routers))
+		e.logger.Info("DNS update pass starting", "routers", len(routers), "new", newCount)
 	}
 
 	zones, err := e.cf.ListZones(ctx)
@@ -160,6 +161,9 @@ func (e *Engine) updateCloudflareRecords(
 	processedHosts := make(map[string]struct{})
 	entrypoints := e.cfg.TraefikEntrypoints
 	customURLs := e.cfg.CustomURLs
+	updatedCount := 0
+	createdCount := 0
+	deletedCount := 0
 
 	processHost := func(host string) {
 		host = strings.ToLower(strings.TrimSpace(host))
@@ -213,6 +217,7 @@ func (e *Engine) updateCloudflareRecords(
 				failedHosts[host] = struct{}{}
 				return
 			}
+			deletedCount++
 		}
 
 		for version, ip := range wanIPs {
@@ -252,6 +257,8 @@ func (e *Engine) updateCloudflareRecords(
 				if err != nil {
 					e.logger.Error("Error updating record", "type", recordType, "host", host, "error", err)
 					failedHosts[host] = struct{}{}
+				} else {
+					updatedCount++
 				}
 			} else {
 				proxied := proxiedForCreate(recordType, e.cfg.CloudflareProxyDefault)
@@ -268,6 +275,8 @@ func (e *Engine) updateCloudflareRecords(
 				if err != nil {
 					e.logger.Error("Error adding record", "type", recordType, "host", host, "error", err)
 					failedHosts[host] = struct{}{}
+				} else {
+					createdCount++
 				}
 			}
 		}
@@ -281,6 +290,8 @@ func (e *Engine) updateCloudflareRecords(
 				if err != nil {
 					e.logger.Error("Error deleting AAAA record", "host", host, "error", err)
 					failedHosts[host] = struct{}{}
+				} else {
+					deletedCount++
 				}
 			}
 		}
@@ -312,17 +323,25 @@ func (e *Engine) updateCloudflareRecords(
 		e.logger.Info(
 			"Initial DNS validation/update complete",
 			"routers", len(routers),
+			"new", newCount,
 			"hosts", len(processedHosts),
 			"zones", len(processedZones),
 			"failed_hosts", len(failedHosts),
+			"updated", updatedCount,
+			"created", createdCount,
+			"deleted", deletedCount,
 		)
 	} else {
 		e.logger.Info(
 			"DNS update pass complete",
 			"routers", len(routers),
+			"new", newCount,
 			"hosts", len(processedHosts),
 			"zones", len(processedZones),
 			"failed_hosts", len(failedHosts),
+			"updated", updatedCount,
+			"created", createdCount,
+			"deleted", deletedCount,
 		)
 	}
 }
