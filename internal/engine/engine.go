@@ -119,7 +119,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		} else if firstRun {
 			firstRun = false
 		} else {
-			e.logger.Info("No new routers found", "routers", len(newRouters))
+			e.logger.Info("Router scan", "routers", len(newRouters), "new", len(addedRouters))
 		}
 
 		if err := sleepWithContext(ctx, e.cfg.Delay); err != nil {
