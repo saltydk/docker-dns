@@ -81,7 +81,7 @@ jobs:
         id: docker_build
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64,linux/arm/v5,linux/arm/v6,linux/arm/v7
           push: true
           build-args: |
             GO_VERSION=${{ steps.build_meta.outputs.go_version }}
@@ -123,7 +123,7 @@ jobs:
       - name: Build and push (dev)
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64,linux/arm/v5,linux/arm/v6,linux/arm/v7
           push: true
           build-args: |
             GO_VERSION=${{ steps.build_meta.outputs.go_version }}
