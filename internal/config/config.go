@@ -90,6 +90,48 @@ func Load() (Config, error) {
 		}
 		cfg.Delay = time.Duration(sec) * time.Second
 	}
+	if v := strings.TrimSpace(os.Getenv("WANIP_TIMEOUT")); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid WANIP_TIMEOUT: %w", err)
+		}
+		cfg.WANIPTimeout = time.Duration(sec) * time.Second
+	}
+	if v := strings.TrimSpace(os.Getenv("WANIP_RETRIES")); v != "" {
+		retries, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid WANIP_RETRIES: %w", err)
+		}
+		cfg.WANIPRetries = retries
+	}
+	if v := strings.TrimSpace(os.Getenv("WANIP_RETRY_DELAY")); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid WANIP_RETRY_DELAY: %w", err)
+		}
+		cfg.WANIPRetryDelay = time.Duration(sec) * time.Second
+	}
+	if v := strings.TrimSpace(os.Getenv("CF_RETRY_ATTEMPTS")); v != "" {
+		attempts, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid CF_RETRY_ATTEMPTS: %w", err)
+		}
+		cfg.CFRetryAttempts = attempts
+	}
+	if v := strings.TrimSpace(os.Getenv("CF_RETRY_MIN_DELAY")); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid CF_RETRY_MIN_DELAY: %w", err)
+		}
+		cfg.CFRetryMinDelay = time.Duration(sec) * time.Second
+	}
+	if v := strings.TrimSpace(os.Getenv("CF_RETRY_MAX_DELAY")); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid CF_RETRY_MAX_DELAY: %w", err)
+		}
+		cfg.CFRetryMaxDelay = time.Duration(sec) * time.Second
+	}
 
 	if v := strings.TrimSpace(os.Getenv("LOG_LEVEL")); v != "" {
 		cfg.LogLevel = strings.ToLower(v)
@@ -114,6 +156,27 @@ func validate(cfg Config) error {
 	}
 	if cfg.IPVersion != "4" && cfg.IPVersion != "6" && cfg.IPVersion != "both" {
 		return errors.New("IP_VERSION must be one of: 4, 6, both")
+	}
+	if cfg.Delay <= 0 {
+		return errors.New("DELAY must be greater than 0")
+	}
+	if cfg.WANIPTimeout <= 0 {
+		return errors.New("WANIP_TIMEOUT must be greater than 0")
+	}
+	if cfg.WANIPRetries <= 0 {
+		return errors.New("WANIP_RETRIES must be greater than 0")
+	}
+	if cfg.WANIPRetryDelay <= 0 {
+		return errors.New("WANIP_RETRY_DELAY must be greater than 0")
+	}
+	if cfg.CFRetryAttempts <= 0 {
+		return errors.New("CF_RETRY_ATTEMPTS must be greater than 0")
+	}
+	if cfg.CFRetryMinDelay <= 0 {
+		return errors.New("CF_RETRY_MIN_DELAY must be greater than 0")
+	}
+	if cfg.CFRetryMaxDelay <= 0 {
+		return errors.New("CF_RETRY_MAX_DELAY must be greater than 0")
 	}
 	return nil
 }

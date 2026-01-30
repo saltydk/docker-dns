@@ -8,3 +8,4 @@
 /coverage.html
 /docker-dns
 *.md
+!README.md

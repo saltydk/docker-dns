@@ -24,6 +24,8 @@ type Engine struct {
 	cf      *cloudflare.Client
 	traefik *traefik.Client
 	wan     *wanip.Provider
+
+	zonesByName map[string]string
 }
 
 func New(cfg config.Config, logger *slog.Logger, cf *cloudflare.Client, tf *traefik.Client, wan *wanip.Provider) *Engine {
@@ -53,12 +55,19 @@ func (e *Engine) Run(ctx context.Context) error {
 	firstRun := true
 	var wanIPs map[int]string
 
-	routersList, err := e.traefik.Routers(ctx)
-	if err != nil {
-		e.logger.Error("Error fetching Traefik routers", "error", err)
-		return err
+	var routers map[string]traefik.Router
+	for {
+		routersList, err := e.traefik.Routers(ctx)
+		if err != nil {
+			e.logger.Error("Error fetching Traefik routers", "error", err)
+			if err := sleepWithContext(ctx, e.cfg.Delay); err != nil {
+				return err
+			}
+			continue
+		}
+		routers = mapRouters(routersList)
+		break
 	}
-	routers := mapRouters(routersList)
 
 	failedHosts := make(map[string]struct{})
 
@@ -98,11 +107,20 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		addedRouters := diffRouters(routers, newRouters)
+		removedRouters := removedRouters(routers, newRouters)
 		newCount := len(addedRouters)
 
 		prevFailed := copySet(failedHosts)
 		failedHosts = make(map[string]struct{})
 		e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, newCount, failedHosts)
+		if firstRun {
+			firstRun = false
+		}
+
+		if len(removedRouters) > 0 {
+			desiredHosts := collectHosts(newRouters, e.cfg.TraefikEntrypoints, e.cfg.CustomURLs)
+			e.cleanupRemovedHosts(ctx, removedRouters, desiredHosts, failedHosts)
+		}
 
 		if len(prevFailed) > 0 {
 			e.logger.Info("Retrying failed hosts", "count", len(prevFailed))
@@ -116,11 +134,6 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		routers = newRouters
-		if len(addedRouters) > 0 {
-			e.updateCloudflareRecords(ctx, addedRouters, wanIPs, false, len(addedRouters), failedHosts)
-		} else if firstRun {
-			firstRun = false
-		}
 
 		if err := sleepWithContext(ctx, e.cfg.Delay); err != nil {
 			return err
@@ -129,8 +142,13 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 type zoneCache struct {
-	zoneID  string
-	records []cloudflare.DNSRecord
+	zoneID         string
+	existingA      map[string]cloudflare.DNSRecord
+	existingAAAA   map[string]cloudflare.DNSRecord
+	existingCNAME  map[string]cloudflare.DNSRecord
+	duplicateA     map[string]struct{}
+	duplicateAAAA  map[string]struct{}
+	duplicateCNAME map[string]struct{}
 }
 
 func (e *Engine) updateCloudflareRecords(
@@ -147,18 +165,13 @@ func (e *Engine) updateCloudflareRecords(
 		e.logger.Info("DNS update pass starting", "routers", len(routers), "new", newCount)
 	}
 
-	zones, err := e.cf.ListZones(ctx)
+	zonesByName, err := e.ensureZones(ctx)
 	if err != nil {
 		e.logger.Error("Failed to list Cloudflare zones", "error", err)
 		return
 	}
-	zonesByName := make(map[string]string, len(zones))
-	for _, z := range zones {
-		zonesByName[z.Name] = z.ID
-	}
 
 	processedZones := make(map[string]*zoneCache)
-	processedHosts := make(map[string]struct{})
 	entrypoints := e.cfg.TraefikEntrypoints
 	customURLs := e.cfg.CustomURLs
 	updatedCount := 0
@@ -166,7 +179,6 @@ func (e *Engine) updateCloudflareRecords(
 	deletedCount := 0
 
 	processHost := func(host string) {
-		host = strings.ToLower(strings.TrimSpace(host))
 		if host == "" {
 			return
 		}
@@ -177,36 +189,27 @@ func (e *Engine) updateCloudflareRecords(
 			return
 		}
 
-		cache, ok := processedZones[rootDomain]
+		var (
+			cache *zoneCache
+			ok    bool
+		)
+		cache, zonesByName, ok = e.getZoneCache(ctx, rootDomain, zonesByName, processedZones)
 		if !ok {
-			zoneID, ok := zonesByName[rootDomain]
-			if !ok {
-				e.logger.Warn("Zone ID not found", "domain", rootDomain)
-				return
-			}
-			records, err := e.cf.ListDNSRecords(ctx, zoneID)
-			if err != nil {
-				e.logger.Error("Failed to list DNS records", "zone", rootDomain, "error", err)
-				return
-			}
-			cache = &zoneCache{zoneID: zoneID, records: records}
-			processedZones[rootDomain] = cache
+			return
 		}
 
-		existingA := make(map[string]cloudflare.DNSRecord)
-		existingAAAA := make(map[string]cloudflare.DNSRecord)
-		existingCNAME := make(map[string]cloudflare.DNSRecord)
-		for _, record := range cache.records {
-			switch record.Type {
-			case "A":
-				existingA[record.Name] = record
-			case "AAAA":
-				existingAAAA[record.Name] = record
-			case "CNAME":
-				existingCNAME[record.Name] = record
-			}
-		}
+		existingA := cache.existingA
+		existingAAAA := cache.existingAAAA
+		existingCNAME := cache.existingCNAME
+		duplicateA := cache.duplicateA
+		duplicateAAAA := cache.duplicateAAAA
+		duplicateCNAME := cache.duplicateCNAME
 
+		if _, ok := duplicateCNAME[host]; ok {
+			e.logger.Error("Multiple CNAME records found for host", "host", host)
+			failedHosts[host] = struct{}{}
+			return
+		}
 		if record, ok := existingCNAME[host]; ok {
 			e.logger.Info("Found CNAME record, deleting", "host", host)
 			err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
@@ -227,9 +230,19 @@ func (e *Engine) updateCloudflareRecords(
 			case 4:
 				recordType = "A"
 				existing = existingA
+				if _, ok := duplicateA[host]; ok {
+					e.logger.Error("Multiple A records found for host", "host", host)
+					failedHosts[host] = struct{}{}
+					continue
+				}
 			case 6:
 				recordType = "AAAA"
 				existing = existingAAAA
+				if _, ok := duplicateAAAA[host]; ok {
+					e.logger.Error("Multiple AAAA records found for host", "host", host)
+					failedHosts[host] = struct{}{}
+					continue
+				}
 			default:
 				e.logger.Error("Invalid IP version", "version", version)
 				continue
@@ -282,6 +295,11 @@ func (e *Engine) updateCloudflareRecords(
 		}
 
 		if e.cfg.IPVersion != "6" && e.cfg.IPVersion != "both" {
+			if _, ok := duplicateAAAA[host]; ok {
+				e.logger.Error("Multiple AAAA records found for host", "host", host)
+				failedHosts[host] = struct{}{}
+				return
+			}
 			if record, ok := existingAAAA[host]; ok {
 				e.logger.Info("Removing AAAA record (IPv6 disabled)", "host", host)
 				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
@@ -297,26 +315,9 @@ func (e *Engine) updateCloudflareRecords(
 		}
 	}
 
-	for _, router := range routers {
-		if len(router.EntryPoints) > 0 && !anyEntrypoint(router.EntryPoints, entrypoints) {
-			continue
-		}
-		hosts := traefik.ExtractHosts(router.Rule)
-		for _, host := range hosts {
-			if _, ok := processedHosts[host]; ok {
-				continue
-			}
-			processHost(host)
-			processedHosts[host] = struct{}{}
-		}
-	}
-
-	for _, host := range customURLs {
-		if _, ok := processedHosts[host]; ok {
-			continue
-		}
+	processedHosts := collectHosts(routers, entrypoints, customURLs)
+	for host := range processedHosts {
 		processHost(host)
-		processedHosts[host] = struct{}{}
 	}
 
 	if firstRun {
@@ -376,6 +377,16 @@ func diffRouters(oldMap, newMap map[string]traefik.Router) map[string]traefik.Ro
 	return out
 }
 
+func removedRouters(oldMap, newMap map[string]traefik.Router) map[string]traefik.Router {
+	out := make(map[string]traefik.Router)
+	for k, v := range oldMap {
+		if _, ok := newMap[k]; !ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func copySet(in map[string]struct{}) map[string]struct{} {
 	out := make(map[string]struct{}, len(in))
 	for k := range in {
@@ -411,4 +422,235 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 func (e *Engine) String() string {
 	return fmt.Sprintf("engine{ipVersion:%s}", e.cfg.IPVersion)
+}
+
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return strings.TrimSuffix(host, ".")
+}
+
+func collectHosts(routers map[string]traefik.Router, entrypoints, customURLs []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, router := range routers {
+		if len(router.EntryPoints) > 0 && !anyEntrypoint(router.EntryPoints, entrypoints) {
+			continue
+		}
+		hosts := traefik.ExtractHosts(router.Rule)
+		for _, host := range hosts {
+			host = normalizeHost(host)
+			if host == "" {
+				continue
+			}
+			out[host] = struct{}{}
+		}
+	}
+	for _, host := range customURLs {
+		host = normalizeHost(host)
+		if host == "" {
+			continue
+		}
+		out[host] = struct{}{}
+	}
+	return out
+}
+
+func (e *Engine) ensureZones(ctx context.Context) (map[string]string, error) {
+	if e.zonesByName == nil {
+		return e.refreshZones(ctx)
+	}
+	return e.zonesByName, nil
+}
+
+func (e *Engine) refreshZones(ctx context.Context) (map[string]string, error) {
+	zones, err := e.cf.ListZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	zonesByName := make(map[string]string, len(zones))
+	for _, z := range zones {
+		zonesByName[z.Name] = z.ID
+	}
+	e.zonesByName = zonesByName
+	return zonesByName, nil
+}
+
+func (e *Engine) getZoneCache(
+	ctx context.Context,
+	rootDomain string,
+	zonesByName map[string]string,
+	processedZones map[string]*zoneCache,
+) (*zoneCache, map[string]string, bool) {
+	if cache, ok := processedZones[rootDomain]; ok {
+		return cache, zonesByName, true
+	}
+
+	zoneID, ok := zonesByName[rootDomain]
+	if !ok {
+		var err error
+		zonesByName, err = e.refreshZones(ctx)
+		if err != nil {
+			e.logger.Error("Failed to refresh Cloudflare zones", "error", err)
+			return nil, zonesByName, false
+		}
+		zoneID, ok = zonesByName[rootDomain]
+	}
+	if !ok {
+		e.logger.Warn("Zone ID not found", "domain", rootDomain)
+		return nil, zonesByName, false
+	}
+
+	records, err := e.cf.ListDNSRecords(ctx, zoneID)
+	if err != nil {
+		e.logger.Warn("Failed to list DNS records, refreshing zones", "zone", rootDomain, "error", err)
+		zonesByName, err = e.refreshZones(ctx)
+		if err != nil {
+			e.logger.Error("Failed to refresh Cloudflare zones", "error", err)
+			return nil, zonesByName, false
+		}
+		zoneID, ok = zonesByName[rootDomain]
+		if !ok {
+			e.logger.Warn("Zone ID not found after refresh", "domain", rootDomain)
+			return nil, zonesByName, false
+		}
+		records, err = e.cf.ListDNSRecords(ctx, zoneID)
+		if err != nil {
+			e.logger.Error("Failed to list DNS records", "zone", rootDomain, "error", err)
+			return nil, zonesByName, false
+		}
+	}
+
+	existingA := make(map[string]cloudflare.DNSRecord)
+	existingAAAA := make(map[string]cloudflare.DNSRecord)
+	existingCNAME := make(map[string]cloudflare.DNSRecord)
+	duplicateA := make(map[string]struct{})
+	duplicateAAAA := make(map[string]struct{})
+	duplicateCNAME := make(map[string]struct{})
+	for _, record := range records {
+		switch record.Type {
+		case "A":
+			if _, ok := existingA[record.Name]; ok {
+				duplicateA[record.Name] = struct{}{}
+			} else {
+				existingA[record.Name] = record
+			}
+		case "AAAA":
+			if _, ok := existingAAAA[record.Name]; ok {
+				duplicateAAAA[record.Name] = struct{}{}
+			} else {
+				existingAAAA[record.Name] = record
+			}
+		case "CNAME":
+			if _, ok := existingCNAME[record.Name]; ok {
+				duplicateCNAME[record.Name] = struct{}{}
+			} else {
+				existingCNAME[record.Name] = record
+			}
+		}
+	}
+
+	cache := &zoneCache{
+		zoneID:         zoneID,
+		existingA:      existingA,
+		existingAAAA:   existingAAAA,
+		existingCNAME:  existingCNAME,
+		duplicateA:     duplicateA,
+		duplicateAAAA:  duplicateAAAA,
+		duplicateCNAME: duplicateCNAME,
+	}
+	processedZones[rootDomain] = cache
+	return cache, zonesByName, true
+}
+
+func (e *Engine) cleanupRemovedHosts(
+	ctx context.Context,
+	routers map[string]traefik.Router,
+	desiredHosts map[string]struct{},
+	failedHosts map[string]struct{},
+) {
+	entrypoints := e.cfg.TraefikEntrypoints
+	removedHosts := collectHosts(routers, entrypoints, nil)
+	if len(removedHosts) == 0 {
+		return
+	}
+
+	zonesByName, err := e.ensureZones(ctx)
+	if err != nil {
+		e.logger.Error("Failed to list Cloudflare zones", "error", err)
+		return
+	}
+
+	processedZones := make(map[string]*zoneCache)
+	deletedCount := 0
+	for host := range removedHosts {
+		if _, ok := desiredHosts[host]; ok {
+			continue
+		}
+		rootDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
+		if err != nil {
+			e.logger.Warn("Unable to determine root domain", "host", host, "error", err)
+			continue
+		}
+
+		var ok bool
+		var cache *zoneCache
+		cache, zonesByName, ok = e.getZoneCache(ctx, rootDomain, zonesByName, processedZones)
+		if !ok {
+			continue
+		}
+
+		if _, ok := cache.duplicateCNAME[host]; ok {
+			e.logger.Error("Multiple CNAME records found for host", "host", host)
+			failedHosts[host] = struct{}{}
+			continue
+		}
+
+		typesToDelete := make([]string, 0, 2)
+		switch e.cfg.IPVersion {
+		case "4":
+			typesToDelete = append(typesToDelete, "A")
+		case "6":
+			typesToDelete = append(typesToDelete, "AAAA")
+		default:
+			typesToDelete = append(typesToDelete, "A", "AAAA")
+		}
+
+		for _, recordType := range typesToDelete {
+			var record cloudflare.DNSRecord
+			var ok bool
+			switch recordType {
+			case "A":
+				if _, ok := cache.duplicateA[host]; ok {
+					e.logger.Error("Multiple A records found for host", "host", host)
+					failedHosts[host] = struct{}{}
+					continue
+				}
+				record, ok = cache.existingA[host]
+			case "AAAA":
+				if _, ok := cache.duplicateAAAA[host]; ok {
+					e.logger.Error("Multiple AAAA records found for host", "host", host)
+					failedHosts[host] = struct{}{}
+					continue
+				}
+				record, ok = cache.existingAAAA[host]
+			}
+			if !ok {
+				continue
+			}
+
+			e.logger.Info("Removing record for removed router", "type", recordType, "host", host)
+			err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
+				return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
+			})
+			if err != nil {
+				e.logger.Error("Error deleting record", "type", recordType, "host", host, "error", err)
+				failedHosts[host] = struct{}{}
+			} else {
+				deletedCount++
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		e.logger.Info("Removed DNS records for removed routers", "deleted", deletedCount)
+	}
 }

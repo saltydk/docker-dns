@@ -13,7 +13,8 @@ import (
 	"strings"
 )
 
-var hostRuleRegexp = regexp.MustCompile("Host\\(`([^`]*)`\\)")
+var hostRuleRegexp = regexp.MustCompile(`Host\(([^)]*)\)`)
+var backtickRegexp = regexp.MustCompile("`([^`]*)`")
 
 // Router represents a subset of Traefik router fields.
 type Router struct {
@@ -88,15 +89,25 @@ func (c *Client) Routers(ctx context.Context) ([]Router, error) {
 // ExtractHosts returns hostnames from a Traefik rule string.
 // Only Host(`...`) with backticks is supported.
 func ExtractHosts(rule string) []string {
-	matches := hostRuleRegexp.FindAllStringSubmatch(rule, -1)
-	if len(matches) == 0 {
+	clauses := hostRuleRegexp.FindAllStringSubmatch(rule, -1)
+	if len(clauses) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		if len(m) > 1 && m[1] != "" {
-			out = append(out, m[1])
+
+	out := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		if len(clause) < 2 || clause[1] == "" {
+			continue
 		}
+		hosts := backtickRegexp.FindAllStringSubmatch(clause[1], -1)
+		for _, host := range hosts {
+			if len(host) > 1 && host[1] != "" {
+				out = append(out, host[1])
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
