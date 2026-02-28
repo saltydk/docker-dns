@@ -39,8 +39,6 @@ func New(cfg config.Config, logger *slog.Logger, cf *cloudflare.Client, tf *trae
 }
 
 func (e *Engine) Run(ctx context.Context) error {
-	e.logger.Info("Saltbox Cloudflare DNS container starting.")
-
 	if err := e.cf.VerifyAuth(ctx); err != nil {
 		e.logger.Error("Cloudflare auth failed", "error", err)
 		return err

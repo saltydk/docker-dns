@@ -37,6 +37,7 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LogLevel)
+	logger.Info("Starting Saltbox Cloudflare Dynamic DNS", "version", version, "commit", commit, "date", date)
 
 	httpClient := &http.Client{
 		Timeout: 20 * time.Second,
