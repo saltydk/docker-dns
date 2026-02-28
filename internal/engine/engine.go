@@ -107,7 +107,6 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 
 		addedRouters := diffRouters(routers, newRouters)
-		removedRouters := removedRouters(routers, newRouters)
 		newCount := len(addedRouters)
 
 		prevFailed := copySet(failedHosts)
@@ -115,11 +114,6 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, newCount, failedHosts)
 		if firstRun {
 			firstRun = false
-		}
-
-		if len(removedRouters) > 0 {
-			desiredHosts := collectHosts(newRouters, e.cfg.TraefikEntrypoints, e.cfg.CustomURLs)
-			e.cleanupRemovedHosts(ctx, removedRouters, desiredHosts, failedHosts)
 		}
 
 		if len(prevFailed) > 0 {
@@ -294,6 +288,26 @@ func (e *Engine) updateCloudflareRecords(
 			}
 		}
 
+		if e.cfg.IPVersion != "4" && e.cfg.IPVersion != "both" {
+			if _, ok := duplicateA[host]; ok {
+				e.logger.Error("Multiple A records found for host", "host", host)
+				failedHosts[host] = struct{}{}
+				return
+			}
+			if record, ok := existingA[host]; ok {
+				e.logger.Info("Removing A record (IPv4 disabled)", "host", host)
+				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
+					return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
+				})
+				if err != nil {
+					e.logger.Error("Error deleting A record", "host", host, "error", err)
+					failedHosts[host] = struct{}{}
+				} else {
+					deletedCount++
+				}
+			}
+		}
+
 		if e.cfg.IPVersion != "6" && e.cfg.IPVersion != "both" {
 			if _, ok := duplicateAAAA[host]; ok {
 				e.logger.Error("Multiple AAAA records found for host", "host", host)
@@ -371,16 +385,6 @@ func diffRouters(oldMap, newMap map[string]traefik.Router) map[string]traefik.Ro
 	out := make(map[string]traefik.Router)
 	for k, v := range newMap {
 		if _, ok := oldMap[k]; !ok {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func removedRouters(oldMap, newMap map[string]traefik.Router) map[string]traefik.Router {
-	out := make(map[string]traefik.Router)
-	for k, v := range oldMap {
-		if _, ok := newMap[k]; !ok {
 			out[k] = v
 		}
 	}
@@ -559,98 +563,4 @@ func (e *Engine) getZoneCache(
 	}
 	processedZones[rootDomain] = cache
 	return cache, zonesByName, true
-}
-
-func (e *Engine) cleanupRemovedHosts(
-	ctx context.Context,
-	routers map[string]traefik.Router,
-	desiredHosts map[string]struct{},
-	failedHosts map[string]struct{},
-) {
-	entrypoints := e.cfg.TraefikEntrypoints
-	removedHosts := collectHosts(routers, entrypoints, nil)
-	if len(removedHosts) == 0 {
-		return
-	}
-
-	zonesByName, err := e.ensureZones(ctx)
-	if err != nil {
-		e.logger.Error("Failed to list Cloudflare zones", "error", err)
-		return
-	}
-
-	processedZones := make(map[string]*zoneCache)
-	deletedCount := 0
-	for host := range removedHosts {
-		if _, ok := desiredHosts[host]; ok {
-			continue
-		}
-		rootDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
-		if err != nil {
-			e.logger.Warn("Unable to determine root domain", "host", host, "error", err)
-			continue
-		}
-
-		var ok bool
-		var cache *zoneCache
-		cache, zonesByName, ok = e.getZoneCache(ctx, rootDomain, zonesByName, processedZones)
-		if !ok {
-			continue
-		}
-
-		if _, ok := cache.duplicateCNAME[host]; ok {
-			e.logger.Error("Multiple CNAME records found for host", "host", host)
-			failedHosts[host] = struct{}{}
-			continue
-		}
-
-		typesToDelete := make([]string, 0, 2)
-		switch e.cfg.IPVersion {
-		case "4":
-			typesToDelete = append(typesToDelete, "A")
-		case "6":
-			typesToDelete = append(typesToDelete, "AAAA")
-		default:
-			typesToDelete = append(typesToDelete, "A", "AAAA")
-		}
-
-		for _, recordType := range typesToDelete {
-			var record cloudflare.DNSRecord
-			var ok bool
-			switch recordType {
-			case "A":
-				if _, ok := cache.duplicateA[host]; ok {
-					e.logger.Error("Multiple A records found for host", "host", host)
-					failedHosts[host] = struct{}{}
-					continue
-				}
-				record, ok = cache.existingA[host]
-			case "AAAA":
-				if _, ok := cache.duplicateAAAA[host]; ok {
-					e.logger.Error("Multiple AAAA records found for host", "host", host)
-					failedHosts[host] = struct{}{}
-					continue
-				}
-				record, ok = cache.existingAAAA[host]
-			}
-			if !ok {
-				continue
-			}
-
-			e.logger.Info("Removing record for removed router", "type", recordType, "host", host)
-			err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-				return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-			})
-			if err != nil {
-				e.logger.Error("Error deleting record", "type", recordType, "host", host, "error", err)
-				failedHosts[host] = struct{}{}
-			} else {
-				deletedCount++
-			}
-		}
-	}
-
-	if deletedCount > 0 {
-		e.logger.Info("Removed DNS records for removed routers", "deleted", deletedCount)
-	}
 }

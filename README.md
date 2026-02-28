@@ -66,8 +66,8 @@ docker run --rm saltydk/dns --version
   - Refreshes zone list on cache miss or record list error.
 - Creates/updates A/AAAA records to match WAN IP(s).
 - Deletes CNAME records that conflict with A/AAAA records.
-- Removes AAAA records when IPv6 is disabled (`IP_VERSION=4`).
-- Removes A/AAAA records for routers that disappear.
+- Removes A/AAAA records for managed hosts when IPv4/IPv6 is disabled (`IP_VERSION=6`/`4`).
+- Keeps existing A/AAAA records when routers disappear.
 - Logs changes and retries failed Cloudflare operations.
 
 ## Cloudflare permissions
