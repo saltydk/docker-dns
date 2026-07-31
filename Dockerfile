@@ -1,26 +1,26 @@
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 FROM golang:${GO_VERSION} AS builder
 
 WORKDIR /src
 
-COPY go.mod ./
-COPY go.sum ./
-RUN go mod download
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
-RUN apt-get update && apt-get install -y --no-install-recommends make && rm -rf /var/lib/apt/lists/*
 
 ARG VERSION=0.0.0-dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
-ENV VERSION=$VERSION \
-    GIT_COMMIT=$GIT_COMMIT \
-    BUILD_TIME=$BUILD_TIME
 
-RUN make build
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_TIME}" \
+      -o /usr/local/bin/docker-dns ./cmd/docker-dns
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian13:nonroot
 
-COPY --from=builder /src/build/docker-dns /usr/local/bin/docker-dns
+COPY --from=builder /usr/local/bin/docker-dns /usr/local/bin/docker-dns
 
 ENTRYPOINT ["/usr/local/bin/docker-dns"]

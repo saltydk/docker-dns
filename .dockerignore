@@ -1,0 +1,10 @@
+.git
+.github
+.cache
+.idea
+.vscode
+build
+coverage.out
+coverage.html
+docker-dns
+*.md

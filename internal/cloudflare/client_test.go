@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	cf "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/shared"
+	cf "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
 )
 
 func TestClassifyErrorAuth(t *testing.T) {
