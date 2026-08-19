@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/cloudflare/cloudflare-go/v7 v7.8.0
-	golang.org/x/net v0.57.0
+	golang.org/x/net v0.58.0
 )
 
 require (
