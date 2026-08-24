@@ -44,6 +44,7 @@ docker run --rm saltydk/dns --version
 | `CLOUDFLARE_API_KEY` | Yes* | | Cloudflare global API key. Required with `CLOUDFLARE_EMAIL` if not using a token. |
 | `CLOUDFLARE_EMAIL` | Yes* | | Cloudflare account email. Required with `CLOUDFLARE_API_KEY` if not using a token. |
 | `CLOUDFLARE_PROXY_DEFAULT` | No | `false` | Default proxied value when creating records. |
+| `CLOUDFLARE_ALLOW_NESTED_PROXY` | No | `false` | Allow proxied records with multiple labels below the zone. Enable only when the Cloudflare zone supports proxied nested subdomains. |
 | `CUSTOM_URLS` | No | | Comma-separated hostnames to manage in addition to Traefik routers. |
 | `IP_VERSION` | No | `both` | `4`, `6`, or `both`. |
 | `DELAY` | No | `60` | Loop delay in seconds. Must be > 0. |

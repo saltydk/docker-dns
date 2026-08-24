@@ -10,6 +10,7 @@ func TestLoadParsesOverrides(t *testing.T) {
 	t.Setenv("TRAEFIK_API_URL", "http://traefik")
 	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
 	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
+	t.Setenv("CLOUDFLARE_ALLOW_NESTED_PROXY", "true")
 	t.Setenv("DELAY", "30")
 	t.Setenv("WANIP_TIMEOUT", "7")
 	t.Setenv("WANIP_RETRIES", "4")
@@ -43,6 +44,9 @@ func TestLoadParsesOverrides(t *testing.T) {
 	if cfg.CFRetryMaxDelay != 9*time.Second {
 		t.Fatalf("expected CF retry max delay 9s, got %v", cfg.CFRetryMaxDelay)
 	}
+	if !cfg.CloudflareAllowNestedProxy {
+		t.Fatal("expected nested proxy override to be enabled")
+	}
 }
 
 func TestLoadValidatesDelay(t *testing.T) {
@@ -71,6 +75,19 @@ func TestLoadValidatesWANIPTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadValidatesNestedProxyOverride(t *testing.T) {
+	resetEnv()
+	t.Setenv("TRAEFIK_API_URL", "http://traefik")
+	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
+	t.Setenv("CLOUDFLARE_ALLOW_NESTED_PROXY", "sometimes")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid nested proxy override")
+	}
+}
+
 func resetEnv() {
 	for _, key := range []string{
 		"TRAEFIK_API_URL",
@@ -78,6 +95,8 @@ func resetEnv() {
 		"CLOUDFLARE_API_TOKEN",
 		"CLOUDFLARE_API_KEY",
 		"CLOUDFLARE_EMAIL",
+		"CLOUDFLARE_PROXY_DEFAULT",
+		"CLOUDFLARE_ALLOW_NESTED_PROXY",
 		"DELAY",
 		"WANIP_TIMEOUT",
 		"WANIP_RETRIES",

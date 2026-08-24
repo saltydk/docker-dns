@@ -24,10 +24,11 @@ const (
 
 // Config holds runtime configuration loaded from environment variables.
 type Config struct {
-	CloudflareAPIKey       string
-	CloudflareEmail        string
-	CloudflareAPIToken     string
-	CloudflareProxyDefault bool
+	CloudflareAPIKey           string
+	CloudflareEmail            string
+	CloudflareAPIToken         string
+	CloudflareProxyDefault     bool
+	CloudflareAllowNestedProxy bool
 
 	TraefikAPIURL      string
 	TraefikEntrypoints []string
@@ -72,6 +73,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid CLOUDFLARE_PROXY_DEFAULT: %w", err)
 		}
 		cfg.CloudflareProxyDefault = b
+	}
+	if v, ok := os.LookupEnv("CLOUDFLARE_ALLOW_NESTED_PROXY"); ok {
+		b, err := parseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid CLOUDFLARE_ALLOW_NESTED_PROXY: %w", err)
+		}
+		cfg.CloudflareAllowNestedProxy = b
 	}
 
 	cfg.TraefikAPIURL = strings.TrimRight(strings.TrimSpace(os.Getenv("TRAEFIK_API_URL")), "/")

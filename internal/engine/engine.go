@@ -109,7 +109,9 @@ func (e *Engine) Run(ctx context.Context) error {
 
 		prevFailed := copySet(failedHosts)
 		failedHosts = make(map[string]struct{})
-		e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, newCount, failedHosts)
+		if err := e.updateCloudflareRecords(ctx, newRouters, wanIPs, firstRun, newCount, failedHosts); err != nil {
+			return err
+		}
 		if firstRun {
 			firstRun = false
 		}
@@ -150,7 +152,7 @@ func (e *Engine) updateCloudflareRecords(
 	firstRun bool,
 	newCount int,
 	failedHosts map[string]struct{},
-) {
+) error {
 	if firstRun {
 		e.logger.Info("Initial DNS validation/update starting", "routers", len(routers), "new", newCount)
 	} else {
@@ -160,7 +162,7 @@ func (e *Engine) updateCloudflareRecords(
 	zonesByName, err := e.ensureZones(ctx)
 	if err != nil {
 		e.logger.Error("Failed to list Cloudflare zones", "error", err)
-		return
+		return nil
 	}
 
 	processedZones := make(map[string]*zoneCache)
@@ -170,15 +172,15 @@ func (e *Engine) updateCloudflareRecords(
 	createdCount := 0
 	deletedCount := 0
 
-	processHost := func(host string) {
+	processHost := func(host string) error {
 		if host == "" {
-			return
+			return nil
 		}
 
 		rootDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
 		if err != nil {
 			e.logger.Warn("Unable to determine root domain", "host", host, "error", err)
-			return
+			return nil
 		}
 
 		var (
@@ -187,7 +189,7 @@ func (e *Engine) updateCloudflareRecords(
 		)
 		cache, zonesByName, ok = e.getZoneCache(ctx, rootDomain, zonesByName, processedZones)
 		if !ok {
-			return
+			return nil
 		}
 
 		existingA := cache.existingA
@@ -200,7 +202,18 @@ func (e *Engine) updateCloudflareRecords(
 		if _, ok := duplicateCNAME[host]; ok {
 			e.logger.Error("Multiple CNAME records found for host", "host", host)
 			failedHosts[host] = struct{}{}
-			return
+			return nil
+		}
+		if err := validateNestedProxyChanges(
+			host,
+			rootDomain,
+			wanIPs,
+			existingA,
+			existingAAAA,
+			e.cfg.CloudflareProxyDefault,
+			e.cfg.CloudflareAllowNestedProxy,
+		); err != nil {
+			return err
 		}
 		if record, ok := existingCNAME[host]; ok {
 			e.logger.Info("Found CNAME record, deleting", "host", host)
@@ -210,7 +223,7 @@ func (e *Engine) updateCloudflareRecords(
 			if err != nil {
 				e.logger.Error("Error deleting CNAME record", "host", host, "error", err)
 				failedHosts[host] = struct{}{}
-				return
+				return nil
 			}
 			deletedCount++
 		}
@@ -290,7 +303,7 @@ func (e *Engine) updateCloudflareRecords(
 			if _, ok := duplicateA[host]; ok {
 				e.logger.Error("Multiple A records found for host", "host", host)
 				failedHosts[host] = struct{}{}
-				return
+				return nil
 			}
 			if record, ok := existingA[host]; ok {
 				e.logger.Info("Removing A record (IPv4 disabled)", "host", host)
@@ -310,7 +323,7 @@ func (e *Engine) updateCloudflareRecords(
 			if _, ok := duplicateAAAA[host]; ok {
 				e.logger.Error("Multiple AAAA records found for host", "host", host)
 				failedHosts[host] = struct{}{}
-				return
+				return nil
 			}
 			if record, ok := existingAAAA[host]; ok {
 				e.logger.Info("Removing AAAA record (IPv6 disabled)", "host", host)
@@ -325,11 +338,14 @@ func (e *Engine) updateCloudflareRecords(
 				}
 			}
 		}
+		return nil
 	}
 
 	processedHosts := collectHosts(routers, entrypoints, customURLs)
 	for host := range processedHosts {
-		processHost(host)
+		if err := processHost(host); err != nil {
+			return err
+		}
 	}
 
 	if firstRun {
@@ -357,6 +373,59 @@ func (e *Engine) updateCloudflareRecords(
 			"deleted", deletedCount,
 		)
 	}
+	return nil
+}
+
+func validateNestedProxyChanges(
+	host string,
+	rootDomain string,
+	wanIPs map[int]string,
+	existingA map[string]cloudflare.DNSRecord,
+	existingAAAA map[string]cloudflare.DNSRecord,
+	proxyDefault bool,
+	allowNestedProxy bool,
+) error {
+	if allowNestedProxy || !isNestedHost(host, rootDomain) {
+		return nil
+	}
+
+	for version, ip := range wanIPs {
+		var recordType string
+		var existing map[string]cloudflare.DNSRecord
+		switch version {
+		case 4:
+			recordType = "A"
+			existing = existingA
+		case 6:
+			recordType = "AAAA"
+			existing = existingAAAA
+		default:
+			continue
+		}
+
+		record, exists := existing[host]
+		if exists && record.Content == ip {
+			continue
+		}
+		proxied := proxiedForCreate(recordType, proxyDefault)
+		if exists {
+			proxied = proxiedForUpdate(record, recordType, proxyDefault)
+		}
+		if proxied {
+			return fmt.Errorf(
+				"refusing to proxy nested Cloudflare record %q in zone %q; set CLOUDFLARE_ALLOW_NESTED_PROXY=true only when the zone supports it",
+				host,
+				rootDomain,
+			)
+		}
+	}
+
+	return nil
+}
+
+func isNestedHost(host, rootDomain string) bool {
+	relative, found := strings.CutSuffix(host, "."+rootDomain)
+	return found && strings.Contains(relative, ".")
 }
 
 func anyEntrypoint(routerEntrypoints, allowed []string) bool {
