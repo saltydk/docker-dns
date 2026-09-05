@@ -50,6 +50,12 @@ type Config struct {
 
 // Load parses environment variables and validates configuration.
 func Load() (Config, error) {
+	return load(os.LookupEnv)
+}
+
+type envLookup func(string) (string, bool)
+
+func load(lookup envLookup) (Config, error) {
 	cfg := Config{
 		IPVersion:       defaultIPVersion,
 		Delay:           time.Duration(defaultDelaySeconds) * time.Second,
@@ -63,18 +69,18 @@ func Load() (Config, error) {
 		LogLevel:        "info",
 	}
 
-	cfg.CloudflareAPIKey = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_KEY"))
-	cfg.CloudflareEmail = strings.TrimSpace(os.Getenv("CLOUDFLARE_EMAIL"))
-	cfg.CloudflareAPIToken = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
+	cfg.CloudflareAPIKey = strings.TrimSpace(envValue(lookup, "CLOUDFLARE_API_KEY"))
+	cfg.CloudflareEmail = strings.TrimSpace(envValue(lookup, "CLOUDFLARE_EMAIL"))
+	cfg.CloudflareAPIToken = strings.TrimSpace(envValue(lookup, "CLOUDFLARE_API_TOKEN"))
 
-	if v, ok := os.LookupEnv("CLOUDFLARE_PROXY_DEFAULT"); ok {
+	if v, ok := lookup("CLOUDFLARE_PROXY_DEFAULT"); ok {
 		b, err := parseBool(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid CLOUDFLARE_PROXY_DEFAULT: %w", err)
 		}
 		cfg.CloudflareProxyDefault = b
 	}
-	if v, ok := os.LookupEnv("CLOUDFLARE_ALLOW_NESTED_PROXY"); ok {
+	if v, ok := lookup("CLOUDFLARE_ALLOW_NESTED_PROXY"); ok {
 		b, err := parseBool(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid CLOUDFLARE_ALLOW_NESTED_PROXY: %w", err)
@@ -82,58 +88,58 @@ func Load() (Config, error) {
 		cfg.CloudflareAllowNestedProxy = b
 	}
 
-	cfg.TraefikAPIURL = strings.TrimRight(strings.TrimSpace(os.Getenv("TRAEFIK_API_URL")), "/")
-	cfg.TraefikEntrypoints = splitCSV(os.Getenv("TRAEFIK_ENTRYPOINTS"))
-	cfg.CustomURLs = splitCSV(os.Getenv("CUSTOM_URLS"))
+	cfg.TraefikAPIURL = strings.TrimRight(strings.TrimSpace(envValue(lookup, "TRAEFIK_API_URL")), "/")
+	cfg.TraefikEntrypoints = splitCSV(envValue(lookup, "TRAEFIK_ENTRYPOINTS"))
+	cfg.CustomURLs = splitCSV(envValue(lookup, "CUSTOM_URLS"))
 
-	if v := strings.TrimSpace(os.Getenv("IP_VERSION")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "IP_VERSION")); v != "" {
 		cfg.IPVersion = v
 	}
 	cfg.IPVersion = strings.ToLower(cfg.IPVersion)
 
-	if v := strings.TrimSpace(os.Getenv("DELAY")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "DELAY")); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid DELAY: %w", err)
 		}
 		cfg.Delay = time.Duration(sec) * time.Second
 	}
-	if v := strings.TrimSpace(os.Getenv("WANIP_TIMEOUT")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "WANIP_TIMEOUT")); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid WANIP_TIMEOUT: %w", err)
 		}
 		cfg.WANIPTimeout = time.Duration(sec) * time.Second
 	}
-	if v := strings.TrimSpace(os.Getenv("WANIP_RETRIES")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "WANIP_RETRIES")); v != "" {
 		retries, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid WANIP_RETRIES: %w", err)
 		}
 		cfg.WANIPRetries = retries
 	}
-	if v := strings.TrimSpace(os.Getenv("WANIP_RETRY_DELAY")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "WANIP_RETRY_DELAY")); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid WANIP_RETRY_DELAY: %w", err)
 		}
 		cfg.WANIPRetryDelay = time.Duration(sec) * time.Second
 	}
-	if v := strings.TrimSpace(os.Getenv("CF_RETRY_ATTEMPTS")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "CF_RETRY_ATTEMPTS")); v != "" {
 		attempts, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid CF_RETRY_ATTEMPTS: %w", err)
 		}
 		cfg.CFRetryAttempts = attempts
 	}
-	if v := strings.TrimSpace(os.Getenv("CF_RETRY_MIN_DELAY")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "CF_RETRY_MIN_DELAY")); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid CF_RETRY_MIN_DELAY: %w", err)
 		}
 		cfg.CFRetryMinDelay = time.Duration(sec) * time.Second
 	}
-	if v := strings.TrimSpace(os.Getenv("CF_RETRY_MAX_DELAY")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "CF_RETRY_MAX_DELAY")); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid CF_RETRY_MAX_DELAY: %w", err)
@@ -141,7 +147,7 @@ func Load() (Config, error) {
 		cfg.CFRetryMaxDelay = time.Duration(sec) * time.Second
 	}
 
-	if v := strings.TrimSpace(os.Getenv("LOG_LEVEL")); v != "" {
+	if v := strings.TrimSpace(envValue(lookup, "LOG_LEVEL")); v != "" {
 		cfg.LogLevel = strings.ToLower(v)
 	}
 
@@ -150,6 +156,11 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func envValue(lookup envLookup, key string) string {
+	value, _ := lookup(key)
+	return value
 }
 
 func validate(cfg Config) error {
@@ -185,6 +196,9 @@ func validate(cfg Config) error {
 	}
 	if cfg.CFRetryMaxDelay <= 0 {
 		return errors.New("CF_RETRY_MAX_DELAY must be greater than 0")
+	}
+	if cfg.CFRetryMinDelay > cfg.CFRetryMaxDelay {
+		return errors.New("CF_RETRY_MIN_DELAY must not exceed CF_RETRY_MAX_DELAY")
 	}
 	return nil
 }

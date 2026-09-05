@@ -1,25 +1,62 @@
 package config
 
 import (
-	"os"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestLoadParsesOverrides(t *testing.T) {
-	t.Setenv("TRAEFIK_API_URL", "http://traefik")
-	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
-	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
-	t.Setenv("CLOUDFLARE_ALLOW_NESTED_PROXY", "true")
-	t.Setenv("DELAY", "30")
-	t.Setenv("WANIP_TIMEOUT", "7")
-	t.Setenv("WANIP_RETRIES", "4")
-	t.Setenv("WANIP_RETRY_DELAY", "6")
-	t.Setenv("CF_RETRY_ATTEMPTS", "5")
-	t.Setenv("CF_RETRY_MIN_DELAY", "2")
-	t.Setenv("CF_RETRY_MAX_DELAY", "9")
+func TestLoadUsesProvidedEnvironmentInsteadOfProcess(t *testing.T) {
+	t.Setenv("IP_VERSION", "bogus")
 
-	cfg, err := Load()
+	cfg, err := load(mapEnvironment(map[string]string{
+		"TRAEFIK_API_URL":      "http://traefik",
+		"TRAEFIK_ENTRYPOINTS":  "web",
+		"CLOUDFLARE_API_TOKEN": "token",
+		"IP_VERSION":           "4",
+		"CF_RETRY_MIN_DELAY":   "2",
+		"CF_RETRY_MAX_DELAY":   "9",
+	}))
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.IPVersion != "4" {
+		t.Fatalf("IPVersion = %q, want 4", cfg.IPVersion)
+	}
+}
+
+func TestLoadRejectsReversedCloudflareRetryDelays(t *testing.T) {
+	_, err := load(mapEnvironment(map[string]string{
+		"TRAEFIK_API_URL":      "http://traefik",
+		"TRAEFIK_ENTRYPOINTS":  "web",
+		"CLOUDFLARE_API_TOKEN": "token",
+		"CF_RETRY_MIN_DELAY":   "10",
+		"CF_RETRY_MAX_DELAY":   "1",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "CF_RETRY_MIN_DELAY must not exceed CF_RETRY_MAX_DELAY") {
+		t.Fatalf("load() error = %v, want retry delay range error", err)
+	}
+}
+
+func mapEnvironment(values map[string]string) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	}
+}
+
+func TestLoadParsesOverrides(t *testing.T) {
+	values := validEnvironment()
+	values["CLOUDFLARE_ALLOW_NESTED_PROXY"] = "true"
+	values["DELAY"] = "30"
+	values["WANIP_TIMEOUT"] = "7"
+	values["WANIP_RETRIES"] = "4"
+	values["WANIP_RETRY_DELAY"] = "6"
+	values["CF_RETRY_ATTEMPTS"] = "5"
+	values["CF_RETRY_MIN_DELAY"] = "2"
+	values["CF_RETRY_MAX_DELAY"] = "9"
+
+	cfg, err := load(mapEnvironment(values))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,61 +87,39 @@ func TestLoadParsesOverrides(t *testing.T) {
 }
 
 func TestLoadValidatesDelay(t *testing.T) {
-	resetEnv()
-	t.Setenv("TRAEFIK_API_URL", "http://traefik")
-	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
-	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
-	t.Setenv("DELAY", "0")
+	values := validEnvironment()
+	values["DELAY"] = "0"
 
-	_, err := Load()
+	_, err := load(mapEnvironment(values))
 	if err == nil {
 		t.Fatalf("expected error for DELAY=0")
 	}
 }
 
 func TestLoadValidatesWANIPTimeout(t *testing.T) {
-	resetEnv()
-	t.Setenv("TRAEFIK_API_URL", "http://traefik")
-	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
-	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
-	t.Setenv("WANIP_TIMEOUT", "0")
+	values := validEnvironment()
+	values["WANIP_TIMEOUT"] = "0"
 
-	_, err := Load()
+	_, err := load(mapEnvironment(values))
 	if err == nil {
 		t.Fatalf("expected error for WANIP_TIMEOUT=0")
 	}
 }
 
 func TestLoadValidatesNestedProxyOverride(t *testing.T) {
-	resetEnv()
-	t.Setenv("TRAEFIK_API_URL", "http://traefik")
-	t.Setenv("TRAEFIK_ENTRYPOINTS", "web")
-	t.Setenv("CLOUDFLARE_API_TOKEN", "token")
-	t.Setenv("CLOUDFLARE_ALLOW_NESTED_PROXY", "sometimes")
+	values := validEnvironment()
+	values["CLOUDFLARE_ALLOW_NESTED_PROXY"] = "sometimes"
 
-	_, err := Load()
+	_, err := load(mapEnvironment(values))
 	if err == nil {
 		t.Fatal("expected error for invalid nested proxy override")
 	}
 }
 
-func resetEnv() {
-	for _, key := range []string{
-		"TRAEFIK_API_URL",
-		"TRAEFIK_ENTRYPOINTS",
-		"CLOUDFLARE_API_TOKEN",
-		"CLOUDFLARE_API_KEY",
-		"CLOUDFLARE_EMAIL",
-		"CLOUDFLARE_PROXY_DEFAULT",
-		"CLOUDFLARE_ALLOW_NESTED_PROXY",
-		"DELAY",
-		"WANIP_TIMEOUT",
-		"WANIP_RETRIES",
-		"WANIP_RETRY_DELAY",
-		"CF_RETRY_ATTEMPTS",
-		"CF_RETRY_MIN_DELAY",
-		"CF_RETRY_MAX_DELAY",
-	} {
-		_ = os.Unsetenv(key)
+func validEnvironment() map[string]string {
+	return map[string]string{
+		"TRAEFIK_API_URL":      "http://traefik",
+		"TRAEFIK_ENTRYPOINTS":  "web",
+		"CLOUDFLARE_API_TOKEN": "token",
 	}
 }
