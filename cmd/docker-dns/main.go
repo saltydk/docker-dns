@@ -56,7 +56,6 @@ func main() {
 	traefikClient := &traefik.Client{
 		BaseURL: cfg.TraefikAPIURL,
 		Client:  httpClient,
-		Logger:  logger,
 	}
 
 	wanProvider := &wanip.Provider{

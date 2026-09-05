@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+const maxResponseBytes = 4 << 20
 
 var hostRuleRegexp = regexp.MustCompile(`Host\(([^)]*)\)`)
 var backtickRegexp = regexp.MustCompile("`([^`]*)`")
@@ -26,7 +27,6 @@ type Router struct {
 type Client struct {
 	BaseURL string
 	Client  *http.Client
-	Logger  *slog.Logger
 }
 
 // Routers returns all routers from Traefik with pagination.
@@ -44,26 +44,29 @@ func (c *Client) Routers(ctx context.Context) ([]Router, error) {
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("creating Traefik routers request for page %d: %w", page, err)
 		}
 
 		resp, err := c.httpClient().Do(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("requesting Traefik routers page %d from %s: %w", page, fullURL, err)
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 		_ = resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading Traefik routers page %d from %s: %w", page, fullURL, err)
+		}
+		if len(body) > maxResponseBytes {
+			return nil, fmt.Errorf("traefik routers response for page %d from %s: status %d, exceeds %d bytes", page, fullURL, resp.StatusCode, maxResponseBytes)
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("traefik status %d", resp.StatusCode)
+			return nil, fmt.Errorf("requesting Traefik routers page %d from %s: status %d", page, fullURL, resp.StatusCode)
 		}
 
 		var routers []Router
 		if err := json.Unmarshal(body, &routers); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decoding Traefik routers page %d from %s: %w", page, fullURL, err)
 		}
 
 		if len(routers) == 0 {
