@@ -28,7 +28,7 @@ GOCACHE_DIR=$(CURDIR)/.cache/go-build
 # Build flags
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(GIT_COMMIT) -X main.date=$(BUILD_TIME)"
 
-.PHONY: all build clean test test-race test-short test-coverage deps update tidy modernize fmt fmt-check vet lint vuln workflow-lint check help run dev version
+.PHONY: all build clean test test-race test-short test-coverage deps update tidy fmt fmt-check vet lint vuln workflow-lint check help run dev version
 
 # Default target
 all: test build
@@ -89,12 +89,6 @@ update:
 tidy:
 	@echo "Tidying go.mod..."
 	$(GOMOD) tidy
-
-## modernize: Modernize the project (format, vet, update, tidy, and apply latest Go patterns)
-modernize: fmt vet update tidy
-	@echo "$(GREEN)Running Go modernization tool...$(NC)"
-	@$(GOCMD) run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./... || echo "Note: modernize tool completed (warnings are normal)"
-	@echo "$(GREEN)Project modernized!$(NC)"
 
 ## fmt: Format code
 fmt:
