@@ -13,7 +13,6 @@ import (
 
 	"docker-dns/internal/cloudflare"
 	"docker-dns/internal/config"
-	"docker-dns/internal/retry"
 	"docker-dns/internal/traefik"
 	"docker-dns/internal/wanip"
 )
@@ -217,9 +216,7 @@ func (e *Engine) updateCloudflareRecords(
 		}
 		if record, ok := existingCNAME[host]; ok {
 			e.logger.Info("Found CNAME record, deleting", "host", host)
-			err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-				return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-			})
+			err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
 			if err != nil {
 				e.logger.Error("Error deleting CNAME record", "host", host, "error", err)
 				failedHosts[host] = struct{}{}
@@ -263,14 +260,11 @@ func (e *Engine) updateCloudflareRecords(
 
 				proxied := proxiedForUpdate(record, recordType, e.cfg.CloudflareProxyDefault)
 				e.logger.Info("Updating record", "type", recordType, "host", host, "proxied", proxied)
-				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-					_, err := e.cf.UpdateDNSRecord(ctx, cache.zoneID, record.ID, cloudflare.RecordParams{
-						Type:    recordType,
-						Name:    host,
-						Content: ip,
-						Proxied: &proxied,
-					})
-					return err
+				_, err := e.cf.UpdateDNSRecord(ctx, cache.zoneID, record.ID, cloudflare.RecordParams{
+					Type:    recordType,
+					Name:    host,
+					Content: ip,
+					Proxied: &proxied,
 				})
 				if err != nil {
 					e.logger.Error("Error updating record", "type", recordType, "host", host, "error", err)
@@ -281,14 +275,11 @@ func (e *Engine) updateCloudflareRecords(
 			} else {
 				proxied := proxiedForCreate(recordType, e.cfg.CloudflareProxyDefault)
 				e.logger.Info("Adding record", "type", recordType, "host", host, "proxied", proxied)
-				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-					_, err := e.cf.CreateDNSRecord(ctx, cache.zoneID, cloudflare.RecordParams{
-						Type:    recordType,
-						Name:    host,
-						Content: ip,
-						Proxied: &proxied,
-					})
-					return err
+				_, err := e.cf.CreateDNSRecord(ctx, cache.zoneID, cloudflare.RecordParams{
+					Type:    recordType,
+					Name:    host,
+					Content: ip,
+					Proxied: &proxied,
 				})
 				if err != nil {
 					e.logger.Error("Error adding record", "type", recordType, "host", host, "error", err)
@@ -307,9 +298,7 @@ func (e *Engine) updateCloudflareRecords(
 			}
 			if record, ok := existingA[host]; ok {
 				e.logger.Info("Removing A record (IPv4 disabled)", "host", host)
-				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-					return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-				})
+				err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
 				if err != nil {
 					e.logger.Error("Error deleting A record", "host", host, "error", err)
 					failedHosts[host] = struct{}{}
@@ -327,9 +316,7 @@ func (e *Engine) updateCloudflareRecords(
 			}
 			if record, ok := existingAAAA[host]; ok {
 				e.logger.Info("Removing AAAA record (IPv6 disabled)", "host", host)
-				err := retry.Do(ctx, e.cfg.CFRetryAttempts, e.cfg.CFRetryMinDelay, e.cfg.CFRetryMaxDelay, func() error {
-					return e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-				})
+				err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
 				if err != nil {
 					e.logger.Error("Error deleting AAAA record", "host", host, "error", err)
 					failedHosts[host] = struct{}{}

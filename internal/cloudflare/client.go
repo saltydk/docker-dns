@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -13,6 +12,8 @@ import (
 	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/cloudflare/cloudflare-go/v7/shared"
 	"github.com/cloudflare/cloudflare-go/v7/zones"
+
+	"docker-dns/internal/retry"
 )
 
 type Auth struct {
@@ -22,8 +23,8 @@ type Auth struct {
 }
 
 type Client struct {
-	api    *cf.Client
-	Logger *slog.Logger
+	api         *cf.Client
+	retryPolicy retry.Policy
 }
 
 type Zone struct {
@@ -46,7 +47,7 @@ type RecordParams struct {
 	Proxied *bool  `json:"proxied,omitempty"`
 }
 
-func New(auth Auth, httpClient *http.Client, logger *slog.Logger) (*Client, error) {
+func New(auth Auth, httpClient *http.Client, retryPolicy retry.Policy) *Client {
 	opts := []option.RequestOption{
 		option.WithMaxRetries(0),
 	}
@@ -65,7 +66,7 @@ func New(auth Auth, httpClient *http.Client, logger *slog.Logger) (*Client, erro
 	}
 
 	client := cf.NewClient(opts...)
-	return &Client{api: client, Logger: logger}, nil
+	return &Client{api: client, retryPolicy: retryPolicy}
 }
 
 func (c *Client) VerifyAuth(ctx context.Context) error {
@@ -117,9 +118,14 @@ func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, params Reco
 	if err != nil {
 		return DNSRecord{}, err
 	}
-	res, err := c.api.DNS.Records.New(ctx, dns.RecordNewParams{
-		ZoneID: cf.F(zoneID),
-		Body:   body,
+	var res *dns.RecordResponse
+	err = retry.Do(ctx, c.retryPolicy, retryDecision, func() error {
+		var requestErr error
+		res, requestErr = c.api.DNS.Records.New(ctx, dns.RecordNewParams{
+			ZoneID: cf.F(zoneID),
+			Body:   body,
+		})
+		return requestErr
 	})
 	if err != nil {
 		return DNSRecord{}, classifyError(err)
@@ -132,9 +138,14 @@ func (c *Client) UpdateDNSRecord(ctx context.Context, zoneID, recordID string, p
 	if err != nil {
 		return DNSRecord{}, err
 	}
-	res, err := c.api.DNS.Records.Update(ctx, recordID, dns.RecordUpdateParams{
-		ZoneID: cf.F(zoneID),
-		Body:   body,
+	var res *dns.RecordResponse
+	err = retry.Do(ctx, c.retryPolicy, retryDecision, func() error {
+		var requestErr error
+		res, requestErr = c.api.DNS.Records.Update(ctx, recordID, dns.RecordUpdateParams{
+			ZoneID: cf.F(zoneID),
+			Body:   body,
+		})
+		return requestErr
 	})
 	if err != nil {
 		return DNSRecord{}, classifyError(err)
@@ -143,8 +154,11 @@ func (c *Client) UpdateDNSRecord(ctx context.Context, zoneID, recordID string, p
 }
 
 func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
-	_, err := c.api.DNS.Records.Delete(ctx, recordID, dns.RecordDeleteParams{
-		ZoneID: cf.F(zoneID),
+	err := retry.Do(ctx, c.retryPolicy, retryDecision, func() error {
+		_, requestErr := c.api.DNS.Records.Delete(ctx, recordID, dns.RecordDeleteParams{
+			ZoneID: cf.F(zoneID),
+		})
+		return requestErr
 	})
 	return classifyError(err)
 }

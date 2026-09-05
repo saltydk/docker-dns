@@ -14,6 +14,7 @@ import (
 	"docker-dns/internal/config"
 	"docker-dns/internal/engine"
 	"docker-dns/internal/logging"
+	"docker-dns/internal/retry"
 	"docker-dns/internal/traefik"
 	"docker-dns/internal/wanip"
 )
@@ -43,15 +44,15 @@ func main() {
 		Timeout: 20 * time.Second,
 	}
 
-	cfClient, err := cloudflare.New(cloudflare.Auth{
+	cfClient := cloudflare.New(cloudflare.Auth{
 		APIToken: cfg.CloudflareAPIToken,
 		APIKey:   cfg.CloudflareAPIKey,
 		Email:    cfg.CloudflareEmail,
-	}, httpClient, logger)
-	if err != nil {
-		logger.Error("Failed to initialize Cloudflare client", "error", err)
-		os.Exit(1)
-	}
+	}, httpClient, retry.Policy{
+		Attempts: cfg.CFRetryAttempts,
+		MinDelay: cfg.CFRetryMinDelay,
+		MaxDelay: cfg.CFRetryMaxDelay,
+	})
 
 	traefikClient := &traefik.Client{
 		BaseURL: cfg.TraefikAPIURL,
