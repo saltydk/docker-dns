@@ -4,30 +4,44 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
-	"golang.org/x/net/publicsuffix"
-
 	"docker-dns/internal/cloudflare"
 	"docker-dns/internal/config"
 	"docker-dns/internal/traefik"
-	"docker-dns/internal/wanip"
 )
 
 type Engine struct {
 	cfg     config.Config
 	logger  *slog.Logger
-	cf      *cloudflare.Client
-	traefik *traefik.Client
-	wan     *wanip.Provider
+	cf      dnsClient
+	traefik routerSource
+	wan     wanIPSource
 
 	zonesByName map[string]string
 }
 
-func New(cfg config.Config, logger *slog.Logger, cf *cloudflare.Client, tf *traefik.Client, wan *wanip.Provider) *Engine {
+type dnsClient interface {
+	VerifyAuth(context.Context) error
+	ListZones(context.Context) ([]cloudflare.Zone, error)
+	ListDNSRecords(context.Context, string) ([]cloudflare.DNSRecord, error)
+	CreateDNSRecord(context.Context, string, cloudflare.RecordParams) (cloudflare.DNSRecord, error)
+	UpdateDNSRecord(context.Context, string, string, cloudflare.RecordParams) (cloudflare.DNSRecord, error)
+	DeleteDNSRecord(context.Context, string, string) error
+}
+
+type routerSource interface {
+	Routers(context.Context) ([]traefik.Router, error)
+}
+
+type wanIPSource interface {
+	GetIPs(context.Context, string) (map[int]string, error)
+}
+
+func New(cfg config.Config, logger *slog.Logger, cf dnsClient, tf routerSource, wan wanIPSource) *Engine {
 	return &Engine{
 		cfg:     cfg,
 		logger:  logger,
@@ -98,7 +112,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			e.logger.Debug("WAN IPs", "previous", wanIPs, "current", newWANIPs)
 		}
 
-		if !reflect.DeepEqual(newWANIPs, wanIPs) {
+		if !maps.Equal(newWANIPs, wanIPs) {
 			e.logger.Info("WAN IPs changed", "ips", newWANIPs)
 			wanIPs = newWANIPs
 		}
@@ -134,16 +148,6 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
-type zoneCache struct {
-	zoneID         string
-	existingA      map[string]cloudflare.DNSRecord
-	existingAAAA   map[string]cloudflare.DNSRecord
-	existingCNAME  map[string]cloudflare.DNSRecord
-	duplicateA     map[string]struct{}
-	duplicateAAAA  map[string]struct{}
-	duplicateCNAME map[string]struct{}
-}
-
 func (e *Engine) updateCloudflareRecords(
 	ctx context.Context,
 	routers map[string]traefik.Router,
@@ -158,181 +162,21 @@ func (e *Engine) updateCloudflareRecords(
 		e.logger.Info("DNS update pass starting", "routers", len(routers), "new", newCount)
 	}
 
-	zonesByName, err := e.ensureZones(ctx)
+	plan, err := e.buildReconciliationPlan(ctx, routers, wanIPs)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		e.logger.Error("Failed to list Cloudflare zones", "error", err)
 		return nil
 	}
 
-	processedZones := make(map[string]*zoneCache)
-	entrypoints := e.cfg.TraefikEntrypoints
-	customURLs := e.cfg.CustomURLs
-	updatedCount := 0
-	createdCount := 0
-	deletedCount := 0
-
-	processHost := func(host string) error {
-		if host == "" {
-			return nil
-		}
-
-		rootDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
-		if err != nil {
-			e.logger.Warn("Unable to determine root domain", "host", host, "error", err)
-			return nil
-		}
-
-		var (
-			cache *zoneCache
-			ok    bool
-		)
-		cache, zonesByName, ok = e.getZoneCache(ctx, rootDomain, zonesByName, processedZones)
-		if !ok {
-			return nil
-		}
-
-		existingA := cache.existingA
-		existingAAAA := cache.existingAAAA
-		existingCNAME := cache.existingCNAME
-		duplicateA := cache.duplicateA
-		duplicateAAAA := cache.duplicateAAAA
-		duplicateCNAME := cache.duplicateCNAME
-
-		if _, ok := duplicateCNAME[host]; ok {
-			e.logger.Error("Multiple CNAME records found for host", "host", host)
-			failedHosts[host] = struct{}{}
-			return nil
-		}
-		if err := validateNestedProxyChanges(
-			host,
-			rootDomain,
-			wanIPs,
-			existingA,
-			existingAAAA,
-			e.cfg.CloudflareProxyDefault,
-			e.cfg.CloudflareAllowNestedProxy,
-		); err != nil {
-			return err
-		}
-		if record, ok := existingCNAME[host]; ok {
-			e.logger.Info("Found CNAME record, deleting", "host", host)
-			err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-			if err != nil {
-				e.logger.Error("Error deleting CNAME record", "host", host, "error", err)
-				failedHosts[host] = struct{}{}
-				return nil
-			}
-			deletedCount++
-		}
-
-		for version, ip := range wanIPs {
-			var recordType string
-			var existing map[string]cloudflare.DNSRecord
-			switch version {
-			case 4:
-				recordType = "A"
-				existing = existingA
-				if _, ok := duplicateA[host]; ok {
-					e.logger.Error("Multiple A records found for host", "host", host)
-					failedHosts[host] = struct{}{}
-					continue
-				}
-			case 6:
-				recordType = "AAAA"
-				existing = existingAAAA
-				if _, ok := duplicateAAAA[host]; ok {
-					e.logger.Error("Multiple AAAA records found for host", "host", host)
-					failedHosts[host] = struct{}{}
-					continue
-				}
-			default:
-				e.logger.Error("Invalid IP version", "version", version)
-				continue
-			}
-
-			if record, ok := existing[host]; ok {
-				if record.Content == ip {
-					if firstRun {
-						e.logger.Debug("Record already updated", "type", recordType, "host", host)
-					}
-					continue
-				}
-
-				proxied := proxiedForUpdate(record, recordType, e.cfg.CloudflareProxyDefault)
-				e.logger.Info("Updating record", "type", recordType, "host", host, "proxied", proxied)
-				_, err := e.cf.UpdateDNSRecord(ctx, cache.zoneID, record.ID, cloudflare.RecordParams{
-					Type:    recordType,
-					Name:    host,
-					Content: ip,
-					Proxied: &proxied,
-				})
-				if err != nil {
-					e.logger.Error("Error updating record", "type", recordType, "host", host, "error", err)
-					failedHosts[host] = struct{}{}
-				} else {
-					updatedCount++
-				}
-			} else {
-				proxied := proxiedForCreate(recordType, e.cfg.CloudflareProxyDefault)
-				e.logger.Info("Adding record", "type", recordType, "host", host, "proxied", proxied)
-				_, err := e.cf.CreateDNSRecord(ctx, cache.zoneID, cloudflare.RecordParams{
-					Type:    recordType,
-					Name:    host,
-					Content: ip,
-					Proxied: &proxied,
-				})
-				if err != nil {
-					e.logger.Error("Error adding record", "type", recordType, "host", host, "error", err)
-					failedHosts[host] = struct{}{}
-				} else {
-					createdCount++
-				}
-			}
-		}
-
-		if e.cfg.IPVersion != "4" && e.cfg.IPVersion != "both" {
-			if _, ok := duplicateA[host]; ok {
-				e.logger.Error("Multiple A records found for host", "host", host)
-				failedHosts[host] = struct{}{}
-				return nil
-			}
-			if record, ok := existingA[host]; ok {
-				e.logger.Info("Removing A record (IPv4 disabled)", "host", host)
-				err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-				if err != nil {
-					e.logger.Error("Error deleting A record", "host", host, "error", err)
-					failedHosts[host] = struct{}{}
-				} else {
-					deletedCount++
-				}
-			}
-		}
-
-		if e.cfg.IPVersion != "6" && e.cfg.IPVersion != "both" {
-			if _, ok := duplicateAAAA[host]; ok {
-				e.logger.Error("Multiple AAAA records found for host", "host", host)
-				failedHosts[host] = struct{}{}
-				return nil
-			}
-			if record, ok := existingAAAA[host]; ok {
-				e.logger.Info("Removing AAAA record (IPv6 disabled)", "host", host)
-				err := e.cf.DeleteDNSRecord(ctx, cache.zoneID, record.ID)
-				if err != nil {
-					e.logger.Error("Error deleting AAAA record", "host", host, "error", err)
-					failedHosts[host] = struct{}{}
-				} else {
-					deletedCount++
-				}
-			}
-		}
-		return nil
+	result, err := e.executePlan(ctx, plan)
+	for host := range result.failedHosts {
+		failedHosts[host] = struct{}{}
 	}
-
-	processedHosts := collectHosts(routers, entrypoints, customURLs)
-	for host := range processedHosts {
-		if err := processHost(host); err != nil {
-			return err
-		}
+	if err != nil {
+		return err
 	}
 
 	if firstRun {
@@ -340,24 +184,24 @@ func (e *Engine) updateCloudflareRecords(
 			"Initial DNS validation/update complete",
 			"routers", len(routers),
 			"new", newCount,
-			"hosts", len(processedHosts),
-			"zones", len(processedZones),
+			"hosts", plan.hostCount,
+			"zones", plan.zoneCount,
 			"failed_hosts", len(failedHosts),
-			"updated", updatedCount,
-			"created", createdCount,
-			"deleted", deletedCount,
+			"updated", result.updated,
+			"created", result.created,
+			"deleted", result.deleted,
 		)
 	} else {
 		e.logger.Info(
 			"DNS update pass complete",
 			"routers", len(routers),
 			"new", newCount,
-			"hosts", len(processedHosts),
-			"zones", len(processedZones),
+			"hosts", plan.hostCount,
+			"zones", plan.zoneCount,
 			"failed_hosts", len(failedHosts),
-			"updated", updatedCount,
-			"created", createdCount,
-			"deleted", deletedCount,
+			"updated", result.updated,
+			"created", result.created,
+			"deleted", result.deleted,
 		)
 	}
 	return nil
@@ -478,10 +322,6 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (e *Engine) String() string {
-	return fmt.Sprintf("engine{ipVersion:%s}", e.cfg.IPVersion)
-}
-
 func normalizeHost(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	return strings.TrimSuffix(host, ".")
@@ -510,111 +350,4 @@ func collectHosts(routers map[string]traefik.Router, entrypoints, customURLs []s
 		out[host] = struct{}{}
 	}
 	return out
-}
-
-func (e *Engine) ensureZones(ctx context.Context) (map[string]string, error) {
-	if e.zonesByName == nil {
-		return e.refreshZones(ctx)
-	}
-	return e.zonesByName, nil
-}
-
-func (e *Engine) refreshZones(ctx context.Context) (map[string]string, error) {
-	zones, err := e.cf.ListZones(ctx)
-	if err != nil {
-		return nil, err
-	}
-	zonesByName := make(map[string]string, len(zones))
-	for _, z := range zones {
-		zonesByName[z.Name] = z.ID
-	}
-	e.zonesByName = zonesByName
-	return zonesByName, nil
-}
-
-func (e *Engine) getZoneCache(
-	ctx context.Context,
-	rootDomain string,
-	zonesByName map[string]string,
-	processedZones map[string]*zoneCache,
-) (*zoneCache, map[string]string, bool) {
-	if cache, ok := processedZones[rootDomain]; ok {
-		return cache, zonesByName, true
-	}
-
-	zoneID, ok := zonesByName[rootDomain]
-	if !ok {
-		var err error
-		zonesByName, err = e.refreshZones(ctx)
-		if err != nil {
-			e.logger.Error("Failed to refresh Cloudflare zones", "error", err)
-			return nil, zonesByName, false
-		}
-		zoneID, ok = zonesByName[rootDomain]
-	}
-	if !ok {
-		e.logger.Warn("Zone ID not found", "domain", rootDomain)
-		return nil, zonesByName, false
-	}
-
-	records, err := e.cf.ListDNSRecords(ctx, zoneID)
-	if err != nil {
-		e.logger.Warn("Failed to list DNS records, refreshing zones", "zone", rootDomain, "error", err)
-		zonesByName, err = e.refreshZones(ctx)
-		if err != nil {
-			e.logger.Error("Failed to refresh Cloudflare zones", "error", err)
-			return nil, zonesByName, false
-		}
-		zoneID, ok = zonesByName[rootDomain]
-		if !ok {
-			e.logger.Warn("Zone ID not found after refresh", "domain", rootDomain)
-			return nil, zonesByName, false
-		}
-		records, err = e.cf.ListDNSRecords(ctx, zoneID)
-		if err != nil {
-			e.logger.Error("Failed to list DNS records", "zone", rootDomain, "error", err)
-			return nil, zonesByName, false
-		}
-	}
-
-	existingA := make(map[string]cloudflare.DNSRecord)
-	existingAAAA := make(map[string]cloudflare.DNSRecord)
-	existingCNAME := make(map[string]cloudflare.DNSRecord)
-	duplicateA := make(map[string]struct{})
-	duplicateAAAA := make(map[string]struct{})
-	duplicateCNAME := make(map[string]struct{})
-	for _, record := range records {
-		switch record.Type {
-		case "A":
-			if _, ok := existingA[record.Name]; ok {
-				duplicateA[record.Name] = struct{}{}
-			} else {
-				existingA[record.Name] = record
-			}
-		case "AAAA":
-			if _, ok := existingAAAA[record.Name]; ok {
-				duplicateAAAA[record.Name] = struct{}{}
-			} else {
-				existingAAAA[record.Name] = record
-			}
-		case "CNAME":
-			if _, ok := existingCNAME[record.Name]; ok {
-				duplicateCNAME[record.Name] = struct{}{}
-			} else {
-				existingCNAME[record.Name] = record
-			}
-		}
-	}
-
-	cache := &zoneCache{
-		zoneID:         zoneID,
-		existingA:      existingA,
-		existingAAAA:   existingAAAA,
-		existingCNAME:  existingCNAME,
-		duplicateA:     duplicateA,
-		duplicateAAAA:  duplicateAAAA,
-		duplicateCNAME: duplicateCNAME,
-	}
-	processedZones[rootDomain] = cache
-	return cache, zonesByName, true
 }

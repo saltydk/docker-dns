@@ -69,7 +69,9 @@ docker run --rm saltydk/dns --version
 - Deletes CNAME records that conflict with A/AAAA records.
 - Removes A/AAAA records for managed hosts when IPv4/IPv6 is disabled (`IP_VERSION=6`/`4`).
 - Keeps existing A/AAAA records when routers disappear.
-- Logs changes and retries failed Cloudflare operations.
+- Plans each full DNS pass before applying changes, then processes hosts in a stable order.
+- Logs and skips unsafe nested-proxy hosts without stopping updates for valid hosts.
+- Retries transient Cloudflare mutations (transport failures, 408, 409, 429, and 5xx responses) with bounded backoff and `Retry-After` support.
 
 ## Cloudflare permissions
 
