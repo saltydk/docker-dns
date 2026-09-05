@@ -16,6 +16,7 @@ GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 GOLANGCI_LINT_VERSION?=v2.13.1
 GOVULNCHECK_VERSION?=v1.7.0
+ACTIONLINT_VERSION?=v1.7.12
 BINARY_NAME=docker-dns
 BINARY_PATH=./cmd/docker-dns
 BUILD_DIR=build
@@ -27,7 +28,7 @@ GOCACHE_DIR=$(CURDIR)/.cache/go-build
 # Build flags
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(GIT_COMMIT) -X main.date=$(BUILD_TIME)"
 
-.PHONY: all build clean test test-race test-short test-coverage deps update tidy modernize fmt fmt-check vet lint vuln check help run dev version
+.PHONY: all build clean test test-race test-short test-coverage deps update tidy modernize fmt fmt-check vet lint vuln workflow-lint check help run dev version
 
 # Default target
 all: test build
@@ -120,8 +121,13 @@ vuln:
 	@echo "$(GREEN)Running govulncheck $(GOVULNCHECK_VERSION)...$(NC)"
 	@$(GOCMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
-## check: Run formatting, vet, lint, vulnerability, and test checks
-check: fmt-check vet lint vuln test
+## workflow-lint: Validate GitHub Actions workflows
+workflow-lint:
+	@echo "$(GREEN)Running actionlint $(ACTIONLINT_VERSION)...$(NC)"
+	@$(GOCMD) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
+## check: Run formatting, vet, lint, vulnerability, workflow, and test checks
+check: fmt-check vet lint vuln workflow-lint test
 
 ## run: Run docker-dns with current environment
 run:
