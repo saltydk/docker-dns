@@ -3,8 +3,8 @@ module docker-dns
 go 1.27
 
 require (
-	github.com/cloudflare/cloudflare-go/v7 v7.9.0
-	golang.org/x/net v0.58.0
+	github.com/cloudflare/cloudflare-go/v7 v7.10.0
+	golang.org/x/net v0.59.0
 )
 
 require (
